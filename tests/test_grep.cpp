@@ -117,7 +117,8 @@ TEST(grep, file_encodings_and_binary) {
     bt::write_file(dir / "le.txt", std::string("\xFF\xFEh\0i\0\n\0h\0e\0l\0l\0o\0\n\0", 20));
     bt::write_file(dir / "be.txt", std::string("\xFE\xFF\0h\0e\0l\0l\0o\0\n", 14));
     bt::write_file(dir / "bad16.txt", std::string("\xFF\xFE\x00\xD8h\0e\0l\0l\0o\0\n\0x", 17));  // lone surrogate + odd byte
-    bt::write_file(dir / "nul.bin", std::string("hello\n\0hello\n", 13));
+    // Not "nul.bin": Windows before 11 reserves NUL.<any extension> as the null device.
+    bt::write_file(dir / "early_nul.bin", std::string("hello\n\0hello\n", 13));
     bt::write_file(dir / "late.bin", "hi\nhello\n" + std::string(100000, 'y') + "\n" + std::string(1, '\0') + "hello\n");
     auto g = Grep::compile("hello", GrepOptions());
     auto r = g->search_file(dir / "bom8.txt");
@@ -131,7 +132,7 @@ TEST(grep, file_encodings_and_binary) {
     CHECK_EQ(r.lines.size(), size_t(1));
     if (!r.lines.empty()) CHECK_EQ(r.lines[0].text, std::string("\xEF\xBF\xBDhello"));
     // NUL within the first block: nothing searched (rg quit mode).
-    r = g->search_file(dir / "nul.bin");
+    r = g->search_file(dir / "early_nul.bin");
     CHECK_MSG(r.binary, "error '" << r.error << "', " << r.bytes_searched << " bytes searched");
     CHECK_EQ(r.matched_lines, size_t(0));
     // NUL in a later block: earlier complete lines are searched.
@@ -143,7 +144,7 @@ TEST(grep, file_encodings_and_binary) {
     CHECK_EQ(Grep::compile("hello", text)->search_file(dir / "late.bin").matched_lines, size_t(2));
     GrepOptions report;
     report.binary = BinaryMode::Report;
-    r = Grep::compile("hello", report)->search_file(dir / "nul.bin");
+    r = Grep::compile("hello", report)->search_file(dir / "early_nul.bin");
     CHECK_MSG(r.binary_matched, "error '" << r.error << "', " << r.bytes_searched << " bytes searched");
     CHECK(r.lines.empty());
     r = g->search_file(dir / "missing.txt");
