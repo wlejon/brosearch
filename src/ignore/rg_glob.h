@@ -13,6 +13,7 @@
 // their UTF-8 bytes, and case folding is ASCII-only. Internal.
 
 #include <bitset>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
