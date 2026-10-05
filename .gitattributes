@@ -1,0 +1,4 @@
+# The fixtures are recorded tool output and the trees it was recorded over:
+# their bytes are the test, line endings included (several grep fixtures are
+# rg's output over CRLF files). No end-of-line conversion, on any platform.
+tests/fixtures/** -text

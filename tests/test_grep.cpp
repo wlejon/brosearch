@@ -132,7 +132,7 @@ TEST(grep, file_encodings_and_binary) {
     if (!r.lines.empty()) CHECK_EQ(r.lines[0].text, std::string("\xEF\xBF\xBDhello"));
     // NUL within the first block: nothing searched (rg quit mode).
     r = g->search_file(dir / "nul.bin");
-    CHECK(r.binary);
+    CHECK_MSG(r.binary, "error '" << r.error << "', " << r.bytes_searched << " bytes searched");
     CHECK_EQ(r.matched_lines, size_t(0));
     // NUL in a later block: earlier complete lines are searched.
     r = g->search_file(dir / "late.bin");
@@ -144,7 +144,7 @@ TEST(grep, file_encodings_and_binary) {
     GrepOptions report;
     report.binary = BinaryMode::Report;
     r = Grep::compile("hello", report)->search_file(dir / "nul.bin");
-    CHECK(r.binary_matched);
+    CHECK_MSG(r.binary_matched, "error '" << r.error << "', " << r.bytes_searched << " bytes searched");
     CHECK(r.lines.empty());
     r = g->search_file(dir / "missing.txt");
     CHECK(!r.error.empty());
