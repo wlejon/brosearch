@@ -61,6 +61,7 @@ private:
     const CancellationToken* token_;
     detail::IgnoreConfig cfg_;
     bool track_git_ = false;
+    bool precompose_ = false;  // NFD names -> NFC for matching and rel_path (macOS only)
 
     std::mutex mu_;
     std::condition_variable cv_;
@@ -168,11 +169,12 @@ void Walker::process(Task& task, detail::DirListing& listing, std::vector<Task>&
 
     const size_t depth = task.depth + 1;
     if (depth > opts_.max_depth) return;
-    std::string rel;
+    std::string rel, nfc;
     size_t counter = 0;
     for (const auto& e : entries) {
         if ((++counter & 255) == 0 && cancelled()) return;
-        const std::string_view name = listing.name(e);
+        std::string_view name = listing.name(e);
+        if (precompose_ && detail::precompose_utf8(name, nfc)) name = nfc;
         const detail::NativeView nname = listing.native_name(e);
         rel.assign(task.rel);
         if (!rel.empty()) rel.push_back('/');
@@ -288,14 +290,8 @@ void Walker::run(const fs::path& root) {
     cfg_.require_git = opts_.require_git;
     cfg_.use_parents = opts_.parents;
     cfg_.glob_icase = opts_.glob_case_insensitive;
-    if (opts_.ignore_case == CaseMode::Auto) {
-        std::optional<bool> repo;
-        fs::path repo_root = detail::find_repo_root(abs);
-        if (!repo_root.empty()) repo = detail::repo_ignorecase(repo_root);
-        cfg_.icase = repo ? *repo : detail::platform_default_ignorecase();
-    } else {
-        cfg_.icase = opts_.ignore_case == CaseMode::Insensitive;
-    }
+    cfg_.icase = detail::resolve_ignorecase(opts_.ignore_case, abs);
+    precompose_ = detail::resolve_precompose(opts_.precompose_unicode, abs);
     for (const auto& g : opts_.globs) cfg_.overrides.add_line(g);
     cfg_.override_includes = cfg_.overrides.size() - cfg_.overrides.whitelist_count();
     if (opts_.git_global) {

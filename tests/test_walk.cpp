@@ -5,8 +5,10 @@
 #include "tree_spec.h"
 
 #include "brosearch/walk.h"
+#include "ignore/git_repo.h"
 
 #include <atomic>
+#include <cstdio>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -67,12 +69,16 @@ TEST(walk, spec_trees) {
             CHECK_MSG(false, name << ": " << err);
             continue;
         }
-#ifdef _WIN32
-        if (spec.posix_only) continue;
-#endif
+        if (auto why = tree_spec::platform_skip(spec); !why.empty()) {
+            std::printf("  skip %s: %s\n", name.c_str(), why.c_str());
+            continue;
+        }
         CHECK_MSG(!spec.expect.empty(), name << ": empty @expect");
         auto tree = bt::scratch_dir(cat("spec_", name)) / "tree";
-        tree_spec::materialize(spec, tree);
+        if (auto why = tree_spec::materialize(spec, tree); !why.empty()) {
+            std::printf("  skip %s: %s\n", name.c_str(), why.c_str());
+            continue;
+        }
         WalkOptions o;
         if (!tree_spec::walk_options(spec, tree, o, err)) {
             CHECK_MSG(false, name << ": " << err);
@@ -100,12 +106,10 @@ TEST(walk, ignore_filter_reproduces_git_trees) {
         std::string err;
         if (!tree_spec::parse(bt::read_file(de.path()), spec, err) || spec.oracle != "git" || !spec.root.empty())
             continue;
-#ifdef _WIN32
-        if (spec.posix_only) continue;
-#endif
+        if (!tree_spec::platform_skip(spec).empty()) continue;
         std::string name = de.path().stem().string();
         auto tree = bt::scratch_dir(cat("filter_", name)) / "tree";
-        tree_spec::materialize(spec, tree);
+        if (!tree_spec::materialize(spec, tree).empty()) continue;
         IgnoreFilter f(tree, CaseMode::Auto);
         if (spec.global) f.load_file(tree_spec::global_file_for(tree), "");
         f.load_file(tree / ".git" / "info" / "exclude", "");
@@ -124,7 +128,7 @@ TEST(walk, ignore_filter_reproduces_git_trees) {
         for (const auto& p : files) {
             auto rel = p.lexically_relative(tree).generic_u8string();
             std::string r(rel.begin(), rel.end());
-            if (!f.is_ignored(r, false)) kept.push_back(r);
+            if (!f.is_ignored(r, false)) kept.push_back(f.precomposes() ? precompose_name(r) : r);
         }
         std::sort(kept.begin(), kept.end());
         CHECK_MSG(kept == spec.expect, name << ": got " << bt::show(kept) << " expected " << bt::show(spec.expect));
@@ -260,6 +264,77 @@ TEST(walk, glob_overrides) {
     CHECK_EQ(collect(root, o), (std::vector<std::string>{"a.C", "b.c", "sub/c.c"}));
     o.globs = {"!sub"};
     CHECK_EQ(collect(root, o), (std::vector<std::string>{"a.C", "b.c"}));
+}
+
+// git's core.precomposeUnicode: on macOS NFD names are matched and reported in NFC (native_path
+// keeps the bytes on disk); everywhere else every mode leaves names alone. The spec trees
+// precompose_*_darwin hold the git / rg oracles for the same behaviour.
+TEST(walk, precompose_unicode) {
+    const std::string nfd_cafe = "cafe\xcc\x81", nfc_cafe = "caf\xc3\xa9";
+#ifdef __APPLE__
+    CHECK_EQ(precompose_name(nfd_cafe + ".txt"), nfc_cafe + ".txt");
+    CHECK_EQ(precompose_name("u\xcc\x88" "ber/" + nfd_cafe), "\xc3\xbc" "ber/" + nfc_cafe);
+    const bool converts = true;
+#else
+    CHECK_EQ(precompose_name(nfd_cafe), nfd_cafe);
+    const bool converts = false;
+#endif
+    CHECK_EQ(precompose_name("plain/ascii.txt"), std::string("plain/ascii.txt"));
+    CHECK_EQ(precompose_name(nfc_cafe), nfc_cafe);
+    CHECK_EQ(precompose_name("bad\xff" + nfd_cafe), "bad\xff" + nfd_cafe);  // ill-formed: kept
+
+    auto root = bt::scratch_dir("walk_precompose");
+    bt::write_file(root / tree_spec::u8path(nfd_cafe + ".txt"), "nfd");
+    bt::write_file(root / tree_spec::u8path(nfd_cafe + "2/x.txt"), "");
+    bt::write_file(root / ".ignore", nfc_cafe + "2/\n");
+    WalkOptions o = hermetic();
+    o.threads = 1;
+    o.precompose_unicode = Precompose::On;
+    std::vector<std::string> seen;
+    walk(root, o, [&](const WalkEntry& e) {
+        seen.emplace_back(e.rel_path);
+        CHECK(e.native_path && fs::exists(*e.native_path));
+        if (e.native_path && e.rel_path.find('/') == std::string_view::npos) {
+            auto n = e.native_path->filename().u8string();
+            CHECK_EQ(std::string(n.begin(), n.end()), nfd_cafe + ".txt");  // bytes as stored
+        }
+        return true;
+    });
+    if (converts) CHECK_EQ(seen, (std::vector<std::string>{nfc_cafe + ".txt"}));
+    else CHECK_EQ(seen, (std::vector<std::string>{nfd_cafe + ".txt", nfd_cafe + "2/x.txt"}));
+    o.precompose_unicode = Precompose::Off;
+    CHECK_EQ(collect(root, o), (std::vector<std::string>{nfd_cafe + ".txt", nfd_cafe + "2/x.txt"}));
+    o.precompose_unicode = Precompose::Auto;  // no repository: off, as git and rg
+    CHECK_EQ(collect(root, o), (std::vector<std::string>{nfd_cafe + ".txt", nfd_cafe + "2/x.txt"}));
+
+    IgnoreFilter on(root, CaseMode::Sensitive, Precompose::On);
+    on.add_rule(nfc_cafe + ".txt");
+    CHECK_EQ(on.precomposes(), converts);
+    CHECK_EQ(on.is_ignored(nfd_cafe + ".txt"), converts);
+    CHECK(on.is_ignored(nfc_cafe + ".txt"));
+    IgnoreFilter off(root, CaseMode::Sensitive, Precompose::Off);
+    off.add_rule(nfc_cafe + ".txt");
+    CHECK(!off.is_ignored(nfd_cafe + ".txt"));
+}
+
+// CaseMode::Auto outside a repository follows the filesystem where the platform can say (macOS
+// volumes are case-insensitive or not; pathconf tells), else the platform default. Oracle: does
+// a file created as "CaseProbe" open as "caseprobe"?
+TEST(walk, auto_case_outside_repo_matches_filesystem) {
+    auto root = bt::scratch_dir("walk_case_probe");
+    if (!bro::search::detail::find_repo_root(root).empty()) {
+        std::printf("  skip: scratch dir is inside a git repository\n");
+        return;
+    }
+    bt::write_file(root / "CaseProbe", "");
+    const bool fs_icase = fs::exists(root / "caseprobe");
+    IgnoreFilter f(root, CaseMode::Auto);
+    CHECK_EQ(f.case_insensitive(), fs_icase);
+    bt::write_file(root / "Foo.LOG", "");
+    bt::write_file(root / ".ignore", "*.log\n");
+    WalkOptions o = hermetic();
+    o.ignore_case = CaseMode::Auto;
+    CHECK_EQ(collect(root, o).size(), fs_icase ? size_t(1) : size_t(2));  // CaseProbe [, Foo.LOG]
 }
 
 #ifdef _WIN32

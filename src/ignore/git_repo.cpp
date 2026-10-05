@@ -4,6 +4,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+#if defined(__APPLE__)
+#include <unistd.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace bro::search::detail {
@@ -207,20 +211,56 @@ std::optional<bool> parse_config_bool(std::string_view v) {
     return std::nullopt;
 }
 
-std::optional<bool> repo_ignorecase(const fs::path& repo_root) {
+namespace {
+
+std::optional<bool> repo_core_bool(const fs::path& repo_root, std::string_view key) {
     auto dirs = resolve_git_dirs(repo_root);
     if (!dirs) return std::nullopt;
     auto text = read_whole_file(dirs->common_dir / "config");
     if (!text) return std::nullopt;
-    auto v = config_value(*text, "core", "ignorecase");
+    auto v = config_value(*text, "core", key);
     if (!v) return std::nullopt;
     return parse_config_bool(*v);
 }
 
-bool platform_default_ignorecase() {
-#if defined(_WIN32) || defined(__APPLE__)
+} // namespace
+
+std::optional<bool> repo_ignorecase(const fs::path& repo_root) { return repo_core_bool(repo_root, "ignorecase"); }
+
+std::optional<bool> repo_precompose(const fs::path& repo_root) {
+    return repo_core_bool(repo_root, "precomposeunicode");
+}
+
+bool platform_default_ignorecase([[maybe_unused]] const fs::path& near) {
+#if defined(_WIN32)
+    return true;
+#elif defined(__APPLE__)
+    if (!near.empty()) {
+        long r = pathconf(near.c_str(), _PC_CASE_SENSITIVE);
+        if (r == 0 || r == 1) return r == 0;
+    }
     return true;
 #else
+    return false;
+#endif
+}
+
+bool resolve_ignorecase(CaseMode mode, const fs::path& root) {
+    if (mode != CaseMode::Auto) return mode == CaseMode::Insensitive;
+    fs::path repo_root = find_repo_root(root);
+    if (!repo_root.empty())
+        if (auto v = repo_ignorecase(repo_root)) return *v;
+    return platform_default_ignorecase(root);
+}
+
+bool resolve_precompose(Precompose mode, [[maybe_unused]] const fs::path& root) {
+#if defined(__APPLE__)
+    if (mode != Precompose::Auto) return mode == Precompose::On;
+    fs::path repo_root = find_repo_root(root);
+    if (repo_root.empty()) return false;
+    return repo_precompose(repo_root).value_or(false);
+#else
+    (void)mode;
     return false;
 #endif
 }

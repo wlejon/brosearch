@@ -21,11 +21,12 @@ enum class EntryType : uint8_t { File, Directory, Symlink, Other };
 
 struct WalkEntry {
     // Path relative to the walk root, '/'-separated, UTF-8 (WTF-8 for ill-formed UTF-16 names on
-    // Windows; raw bytes on POSIX). Valid only for the duration of the callback.
+    // Windows; raw bytes on POSIX, precomposed to NFC when WalkOptions::precompose_unicode is in
+    // effect on macOS). Valid only for the duration of the callback.
     std::string_view rel_path;
     EntryType type = EntryType::File;
     size_t depth = 0;  // 1 = direct child of root
-    // Native path (root as given / rel_path), for opening the file. Null when
+    // Native path (root as given / the names as stored on disk), for opening the file. Null when
     // WalkOptions::native_paths is false.
     const std::filesystem::path* native_path = nullptr;
 };
@@ -42,6 +43,9 @@ struct WalkOptions {
     bool yield_directories = false;  // also report directories (rg --files never does)
     size_t max_depth = SIZE_MAX;     // rg --max-depth semantics: 1 = only the root's children
     CaseMode ignore_case = CaseMode::Auto;  // matching of ignore patterns, see ignore.h
+    // NFD names matched and reported in NFC (macOS, git's core.precomposeUnicode), see ignore.h.
+    // rg never precomposes; Off reproduces it.
+    Precompose precompose_unicode = Precompose::Auto;
     // ripgrep -g/--glob overrides (gitignore syntax, relative to the root): "pat" includes (files
     // matching no include are skipped; directories are still descended), "!pat" excludes.
     // Overrides beat ignore files and hidden-skipping, as in rg.

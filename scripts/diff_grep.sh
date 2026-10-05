@@ -68,7 +68,9 @@ while IFS=$'\t' read -r name args; do
 done < "$fix/cases.txt"
 echo "corpus: $pass agree, $fail differ"
 
-now_ms() { date +%s%N | cut -b1-13; }
+# BSD date (macOS) has no %N; fall back to perl there.
+if [ -n "$(date +%N | tr -d 0-9)" ]; then now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000'; }
+else now_ms() { date +%s%N | cut -b1-13; }; fi
 best_of_3() {
     local best=999999999 t0 t1
     for _ in 1 2 3; do

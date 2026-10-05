@@ -17,7 +17,7 @@ The bar is agreement with the reference tools, which the test suite holds it to:
 |--------|------|
 | `fuzzy.h` | `FuzzyQuery` / `fuzzy_match` / `fuzzy_filter`: fzf's v2 algorithm (with its V1 fallback for long items) and fzf's extended query syntax (`'exact ^prefix suffix$ !not a\|b`), with smart case, Latin diacritic folding and fzf's default, path and history scoring schemes. Ranking and tie-breaks match fzf. Batch filtering is multithreaded and can be cancelled. |
 | `fuzzy_index.h` | `FuzzyIndex`: an append-only item store for incremental and streaming use. Searches run concurrently with `add()`, and a refined query only re-scans the matches cached from its prefix, as in fzf. Results always equal a cold search. |
-| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics. `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg. |
+| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics. `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg; `Precompose::Auto` follows `core.precomposeUnicode` on macOS. |
 | `walk.h` | `walk` / `list_files`: a parallel directory walk with pruning. It honours `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, global excludes and parent-directory ignore files with rg's precedence, plus `-g` overrides. Nothing is ignored by default beyond what rg ignores. |
 | `regex.h` | `Regex`: our own linear-time engine with Rust/rg syntax (see below). |
 | `grep.h` | `Grep`: rg-compatible line search over buffers, files, file lists and trees. Covers fixed strings, smart/insensitive case, `-w`/`-x`, invert, context lines, max count, UTF-8 and UTF-16 BOM decoding, binary detection (rg's quit/convert models), stats and prompt cancellation. Also has terminal helpers `detect_urls` / `detect_git_hashes`. |
@@ -39,7 +39,7 @@ It has no dependencies: RE2 would pull in abseil, and PCRE backtracks.
 ```bash
 cmake -B build && cmake --build build --config Release      # Windows (VS generator)
 ctest --test-dir build -C Release
-cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release   # Linux
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release   # Linux, macOS
 ctest --test-dir build-release
 ```
 
@@ -72,3 +72,9 @@ scripts/diff_fuzzy.sh ...                                     # vs fzf --filter
   - `-c` on an explicitly named binary file (rg's convert mode) may count differently.
   - The rg front end lives in `tests/grep_oracle.h`. It collects whole-file results, so output-heavy searches (hundreds of thousands of lines) are slower than rg's streaming printer.
 - **Ignore:** the library default is git's case behaviour (`CaseMode::Auto`), while rg always matches case-sensitively.
+  Outside a repository, `Auto` on macOS asks the volume (`pathconf(_PC_CASE_SENSITIVE)`).
+- **macOS names:** with `Precompose::Auto` (the default) a walk inside a repository with
+  `core.precomposeUnicode=true` (what `git init` writes on macOS) matches and reports NFD names in NFC, through the
+  same iconv `UTF-8-MAC` conversion git uses; `WalkEntry::native_path` keeps the stored bytes. rg never precomposes
+  (`Precompose::Off`). The `*_darwin.spec` trees hold both oracles. APFS refuses non-UTF-8 names, so
+  `nonutf8_posix.spec` is skipped there with the reason printed.

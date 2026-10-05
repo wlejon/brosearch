@@ -40,6 +40,11 @@ target_include_directories(brosearch
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_link_libraries(brosearch PUBLIC Threads::Threads)
+if(APPLE)
+    # git's NFD -> NFC precomposition (src/ignore/precompose.cpp) goes through the system iconv,
+    # the only one with Apple's "UTF-8-MAC" decomposition.
+    target_link_libraries(brosearch PRIVATE iconv)
+endif()
 
 option(BROSEARCH_BUILD_TESTS "Build the brosearch test suite" ON)
 option(BROSEARCH_BUILD_TOOLS "Build the brosearch CLI (differential-oracle driver)" ON)

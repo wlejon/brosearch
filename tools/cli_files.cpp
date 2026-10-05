@@ -7,12 +7,15 @@
 //             --ignore-file F
 //   extras:   --sort            sort output bytewise (deterministic)
 //             --case=auto|sensitive|insensitive   ignore-pattern case mode (default auto)
+//             --precompose=auto|on|off            NFD -> NFC names on macOS (default auto)
 //             --global-file F   global excludes file instead of core.excludesFile
 //             --dirs            also print directories
 //             --count           print only the number of files
 //             --bench=N         walk N times, print best/avg ms to stderr
 //   spec mode (tests/tree_spec.h; used by scripts/diff_files.sh):
-//             --materialize SPEC DIR   build the tree; prints "git <dir> <true|false|->" per repo
+//             --materialize SPEC DIR   build the tree; prints "git <dir> <ignorecase> <precompose>"
+//                                      (true|false|-) per repo, or "skip <why>" and exits 3 when
+//                                      this platform / filesystem cannot run the spec
 //             --run-spec SPEC DIR      walk DIR with the spec's options, sorted
 //             --rg-args SPEC           the rg flags equivalent to the spec's options, one per line
 //             --check-spec SPEC DIR    exit 0 if --run-spec output equals the spec's @expect
@@ -95,7 +98,9 @@ int spec_mode(int argc, char** argv) {
         for (const auto& w : spec.options) {
             if (w.rfind("glob=", 0) == 0) std::printf("-g\n%s\n", w.c_str() + 5);
             else if (w.rfind("max-depth=", 0) == 0) std::printf("--max-depth\n%s\n", w.c_str() + 10);
-            else if (w.rfind("threads=", 0) == 0 || w.rfind("case=", 0) == 0 || w == "parents") continue;
+            else if (w.rfind("threads=", 0) == 0 || w.rfind("case=", 0) == 0 || w.rfind("precompose=", 0) == 0 ||
+                     w == "parents")
+                continue;
             else std::printf("--%s\n", w.c_str());
         }
         return 0;
@@ -135,9 +140,15 @@ int spec_mode(int argc, char** argv) {
     if (argc < 4) return 2;
     fs::path dir = arg_path(argv[3]);
     if (mode == "--materialize") {
-        tree_spec::materialize(spec, dir);
+        auto flag = [](const std::optional<bool>& b) { return b ? (*b ? "true" : "false") : "-"; };
+        std::string why = tree_spec::platform_skip(spec);
+        if (why.empty()) why = tree_spec::materialize(spec, dir);
+        if (!why.empty()) {
+            std::printf("skip %s\n", why.c_str());
+            return 3;
+        }
         for (const auto& g : spec.git_roots)
-            std::printf("git %s %s\n", g.dir.c_str(), g.ignorecase ? (*g.ignorecase ? "true" : "false") : "-");
+            std::printf("git %s %s %s\n", g.dir.c_str(), flag(g.ignorecase), flag(g.precompose));
         std::printf("root %s\n", spec.root.empty() ? "." : spec.root.c_str());
         std::printf("oracle %s\n", spec.oracle.c_str());
         std::printf("posix %d\n", spec.posix_only ? 1 : 0);

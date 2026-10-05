@@ -29,7 +29,7 @@ inline std::vector<std::string> unicode_corpus(size_t n, uint64_t seed) {
     static const char* const words[] = {
         "readme", "Makefile", "src", "lib", "main", "test", "Résumé", "résumé", "naïve", "café", "CAFÉ",
         "Ångström", "Straße", "STRASSE", "ΑΘΗΝΑ", "αθήνα", "Ωmega", "Москва", "москва", "Привет",
-        "東京", "日本語", "中文文件", "ǅemal", "ǆungla", "İstanbul", "ıi", "\xE2\x84\xAA" "elvin", "ﬁle",
+        "東京", "日本語", "中文文件", "ǅemal", "ǆungla", "İstanbul", "ıi", ("\xE2\x84\xAA" "elvin"), "ﬁle",
         "ＡＢＣ", "ａｂｃ", "Ünïcödé", "über", "Über", "façade", "jalapeño", "Éclair", "ÉCOLE", "ñandú",
         "Ελληνικά", "data", "config", "build", "Font", "émoji😀", "tab\there", "x\xFFy", "\xC3", "Zürich",
     };

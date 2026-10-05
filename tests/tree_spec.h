@@ -7,7 +7,9 @@
 //   @oracle git|rg          tool whose output the @expect block holds
 //   @options w1 w2 ...      walker options (see apply_walk_option), e.g. hidden glob=!.git
 //   @posix                  only meaningful on POSIX (non-UTF-8 names)
-//   @git DIR [ignorecase=true|false]   fake repository at DIR ("." = tree root): DIR/.git/config
+//   @darwin                 only meaningful on macOS (core.precomposeUnicode, NFD names)
+//   @git DIR [ignorecase=true|false] [precompose=true|false]
+//                           fake repository at DIR ("." = tree root): DIR/.git/config
 //   @exclude DIR = TEXT     DIR/.git/info/exclude
 //   @global = TEXT          global excludes (HOME/.config/git/ignore beside the tree)
 //   @file PATH [= TEXT]     file (empty unless TEXT); parent dirs created
@@ -16,9 +18,12 @@
 //   @root DIR               walk tree/DIR instead of the tree root (oracle runs from there)
 //   @expect                rest of the file: expected `files` output, one path per line
 // PATH and TEXT take escapes: \n \r \t \\ \xHH (so names may hold spaces or raw bytes).
+// A filesystem may refuse names a spec needs (APFS rejects non-UTF-8 bytes): materialize() then
+// returns the reason and the caller skips the spec.
 
 #include "brosearch/walk.h"
 
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -38,6 +43,7 @@ struct Entry {
 struct GitRoot {
     std::string dir;
     std::optional<bool> ignorecase;
+    std::optional<bool> precompose;
     std::optional<std::string> exclude;
 };
 
@@ -45,6 +51,7 @@ struct Spec {
     std::string oracle = "rg";
     std::vector<std::string> options;
     bool posix_only = false;
+    bool darwin_only = false;
     std::string root;  // relative walk root ("" = tree)
     std::vector<GitRoot> git_roots;
     std::optional<std::string> global;
@@ -133,6 +140,8 @@ inline bool parse(std::string_view text, Spec& spec, std::string& err) {
             spec.oracle = std::string(trim(rest));
         } else if (kw == "@posix") {
             spec.posix_only = true;
+        } else if (kw == "@darwin") {
+            spec.darwin_only = true;
         } else if (kw == "@root") {
             spec.root = unescape(trim(rest));
         } else if (kw == "@symlink") {
@@ -155,10 +164,14 @@ inline bool parse(std::string_view text, Spec& spec, std::string& err) {
             std::string_view r = trim(rest);
             size_t sp = r.find(' ');
             g.dir = unescape(r.substr(0, sp));
-            if (sp != std::string_view::npos) {
-                std::string_view o = trim(r.substr(sp + 1));
+            while (sp != std::string_view::npos) {
+                r = trim(r.substr(sp + 1));
+                sp = r.find(' ');
+                std::string_view o = r.substr(0, sp);
                 if (o == "ignorecase=true") g.ignorecase = true;
                 else if (o == "ignorecase=false") g.ignorecase = false;
+                else if (o == "precompose=true") g.precompose = true;
+                else if (o == "precompose=false") g.precompose = false;
                 else { err = "bad @git option: " + std::string(o); return false; }
             }
             spec.git_roots.push_back(std::move(g));
@@ -197,8 +210,25 @@ inline std::filesystem::path u8path(std::string_view s) {
 
 inline void write_bytes(const std::filesystem::path& p, std::string_view content) {
     std::filesystem::create_directories(p.parent_path());
+    errno = 0;
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        const int e = errno ? errno : EIO;
+        throw std::filesystem::filesystem_error("cannot create file", p, std::error_code(e, std::generic_category()));
+    }
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
+}
+
+// Whether this platform runs the spec at all ("" = yes, else why not).
+inline std::string platform_skip(const Spec& spec) {
+#ifdef _WIN32
+    if (spec.posix_only) return "POSIX-only spec";
+#endif
+#ifndef __APPLE__
+    if (spec.darwin_only) return "macOS-only spec";
+#endif
+    (void)spec;
+    return {};
 }
 
 // HOME used for the spec's global excludes file: a sibling of the tree directory.
@@ -210,29 +240,38 @@ inline std::filesystem::path global_file_for(const std::filesystem::path& tree) 
     return home_for(tree) / ".config" / "git" / "ignore";
 }
 
-inline void materialize(const Spec& spec, const std::filesystem::path& tree) {
-    std::filesystem::create_directories(tree);
-    for (const auto& g : spec.git_roots) {
-        auto gd = (g.dir == "." ? tree : tree / u8path(g.dir)) / ".git";
-        std::filesystem::create_directories(gd / "info");
-        std::string cfg = "[core]\n\trepositoryformatversion = 0\n";
-        if (g.ignorecase) cfg += std::string("\tignorecase = ") + (*g.ignorecase ? "true" : "false") + "\n";
-        write_bytes(gd / "config", cfg);
-        if (g.exclude) write_bytes(gd / "info" / "exclude", *g.exclude);
-    }
-    if (spec.global) write_bytes(global_file_for(tree), *spec.global);
-    for (const auto& e : spec.entries) {
-        auto p = tree / u8path(e.path);
-        if (e.dir) {
-            std::filesystem::create_directories(p);
-        } else if (e.symlink) {
-            std::error_code ec;
-            std::filesystem::create_directories(p.parent_path(), ec);
-            std::filesystem::create_symlink(u8path(e.content), p, ec);  // may fail on Windows
-        } else {
-            write_bytes(p, e.content);
+// Builds the tree. Returns "" on success, or why the filesystem cannot hold it (a name it refuses,
+// e.g. non-UTF-8 bytes on APFS: EILSEQ); other failures throw.
+inline std::string materialize(const Spec& spec, const std::filesystem::path& tree) {
+    try {
+        std::filesystem::create_directories(tree);
+        for (const auto& g : spec.git_roots) {
+            auto gd = (g.dir == "." ? tree : tree / u8path(g.dir)) / ".git";
+            std::filesystem::create_directories(gd / "info");
+            std::string cfg = "[core]\n\trepositoryformatversion = 0\n";
+            if (g.ignorecase) cfg += std::string("\tignorecase = ") + (*g.ignorecase ? "true" : "false") + "\n";
+            if (g.precompose) cfg += std::string("\tprecomposeunicode = ") + (*g.precompose ? "true" : "false") + "\n";
+            write_bytes(gd / "config", cfg);
+            if (g.exclude) write_bytes(gd / "info" / "exclude", *g.exclude);
         }
+        if (spec.global) write_bytes(global_file_for(tree), *spec.global);
+        for (const auto& e : spec.entries) {
+            auto p = tree / u8path(e.path);
+            if (e.dir) {
+                std::filesystem::create_directories(p);
+            } else if (e.symlink) {
+                std::error_code ec;
+                std::filesystem::create_directories(p.parent_path(), ec);
+                std::filesystem::create_symlink(u8path(e.content), p, ec);  // may fail on Windows
+            } else {
+                write_bytes(p, e.content);
+            }
+        }
+    } catch (const std::filesystem::filesystem_error& ex) {
+        if (ex.code() == std::errc::illegal_byte_sequence) return std::string("filesystem refuses a name: ") + ex.what();
+        throw;
     }
+    return {};
 }
 
 inline std::filesystem::path walk_root(const Spec& spec, const std::filesystem::path& tree) {
@@ -263,6 +302,11 @@ inline bool apply_walk_option(bro::search::WalkOptions& o, std::string_view w) {
         if (*v4 == "auto") o.ignore_case = bro::search::CaseMode::Auto;
         else if (*v4 == "sensitive") o.ignore_case = bro::search::CaseMode::Sensitive;
         else if (*v4 == "insensitive") o.ignore_case = bro::search::CaseMode::Insensitive;
+        else return false;
+    } else if (auto v5 = val("precompose")) {
+        if (*v5 == "auto") o.precompose_unicode = bro::search::Precompose::Auto;
+        else if (*v5 == "on") o.precompose_unicode = bro::search::Precompose::On;
+        else if (*v5 == "off") o.precompose_unicode = bro::search::Precompose::Off;
         else return false;
     } else return false;
     return true;

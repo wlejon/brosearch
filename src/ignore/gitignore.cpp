@@ -152,23 +152,23 @@ IgnoreMatch Gitignore::match(std::string_view path, bool is_dir, bool icase) con
 // ---------------------------------------------------------------------------------------------
 // IgnoreFilter
 
+std::string precompose_name(std::string_view name) {
+    std::string out;
+    if (detail::precompose_utf8(name, out)) return out;
+    return std::string(name);
+}
+
 IgnoreFilter::IgnoreFilter(CaseMode mode) {
     icase_ = mode == CaseMode::Insensitive ||
              (mode == CaseMode::Auto && detail::platform_default_ignorecase());
 }
 
-IgnoreFilter::IgnoreFilter(const fs::path& root, CaseMode mode) {
+IgnoreFilter::IgnoreFilter(const fs::path& root, CaseMode mode, Precompose precompose) {
     std::error_code ec;
     root_ = fs::absolute(root, ec).lexically_normal();
     if (ec) root_ = root;
-    if (mode == CaseMode::Auto) {
-        std::optional<bool> repo;
-        fs::path repo_root = detail::find_repo_root(root_);
-        if (!repo_root.empty()) repo = detail::repo_ignorecase(repo_root);
-        icase_ = repo ? *repo : detail::platform_default_ignorecase();
-    } else {
-        icase_ = mode == CaseMode::Insensitive;
-    }
+    icase_ = detail::resolve_ignorecase(mode, root_);
+    precompose_ = detail::resolve_precompose(precompose, root_);
 }
 
 IgnoreFilter::Group& IgnoreFilter::group_for(std::string_view base_dir) {
@@ -239,6 +239,10 @@ std::string IgnoreFilter::normalize(std::string_view path) const {
     while (!s.empty() && s.front() == '/') s.erase(0, 1);
     while (!s.empty() && s.back() == '/') s.pop_back();
     if (s == ".") s.clear();
+    if (precompose_) {
+        std::string nfc;
+        if (detail::precompose_utf8(s, nfc)) s = std::move(nfc);
+    }
     return s;
 }
 

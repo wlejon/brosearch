@@ -23,8 +23,23 @@
 namespace bro::search {
 
 // How ignore patterns compare letters. Auto = the repository's core.ignorecase when inside a git
-// repo, else the platform default (insensitive on Windows and macOS, sensitive elsewhere).
+// repo, else the platform default (insensitive on Windows; on macOS whatever the volume reports,
+// insensitive if unknown; sensitive elsewhere).
 enum class CaseMode : uint8_t { Auto, Sensitive, Insensitive };
+
+// Unicode precomposition of path names, git's core.precomposeUnicode. macOS compares names
+// normalization-insensitively, and HFS+ (and Cocoa's file APIs, on APFS too) store them decomposed
+// (NFD), while ignore patterns are normally typed composed (NFC). When on, each non-ASCII name is
+// converted to NFC before matching, exactly as git converts it (patterns are used as written), and
+// the walker reports rel_path in NFC; WalkEntry::native_path keeps the bytes on disk.
+// Auto = the repository's core.precomposeUnicode (which `git init` sets to true on macOS); off
+// outside a repository. Like git, this only exists on macOS: elsewhere the two normalizations are
+// different names and every mode means off.
+enum class Precompose : uint8_t { Auto, Off, On };
+
+// The NFC form git uses for an NFD name on macOS (`name` itself if ASCII, ill-formed, already
+// composed, or on any other platform).
+[[nodiscard]] std::string precompose_name(std::string_view name);
 
 // Outcome of matching one path: no rule matched, the last matching rule ignores it, or the last
 // matching rule is a negation ("!pat") that whitelists it.
@@ -80,8 +95,10 @@ public:
     // No root: paths and bases are taken as given (relative). Auto resolves to the platform default.
     explicit IgnoreFilter(CaseMode mode = CaseMode::Sensitive);
     // With a root: absolute paths under it are made relative, load_file() derives each file's base
-    // from its location, and Auto reads core.ignorecase from the repository containing `root`.
-    explicit IgnoreFilter(const std::filesystem::path& root, CaseMode mode = CaseMode::Auto);
+    // from its location, and Auto reads core.ignorecase / core.precomposeUnicode from the
+    // repository containing `root`. Precomposition applies to the paths asked about.
+    explicit IgnoreFilter(const std::filesystem::path& root, CaseMode mode = CaseMode::Auto,
+                          Precompose precompose = Precompose::Auto);
 
     void add_rule(std::string_view line, std::string_view base_dir = "");
     void add_rules(std::string_view content, std::string_view base_dir = "");
@@ -104,6 +121,7 @@ public:
     [[nodiscard]] bool is_ignored(const std::filesystem::path& path, bool is_dir = false) const;
 
     [[nodiscard]] bool case_insensitive() const noexcept { return icase_; }
+    [[nodiscard]] bool precomposes() const noexcept { return precompose_; }
     [[nodiscard]] size_t rule_count() const noexcept;
 
 private:
@@ -117,6 +135,7 @@ private:
 
     std::filesystem::path root_;
     bool icase_ = false;
+    bool precompose_ = false;
     std::vector<Group> groups_;
 };
 
