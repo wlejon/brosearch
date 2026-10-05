@@ -1,6 +1,7 @@
 ./binary_early.bin: binary file matches (found "\0" byte around offset 0)
 ./binary_late.dat:1:hello first
 ./binary_late.dat: binary file matches (found "\0" byte around offset 70042)
+./binary_mixed.dat: binary file matches (found "\0" byte around offset 19)
 ./bom8.txt:1:hello bom
 ./latin1.txt:1:café hello
 ./latin1.txt:2:ÿþ broken hello

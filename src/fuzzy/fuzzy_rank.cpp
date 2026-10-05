@@ -143,8 +143,17 @@ void parallel_for(size_t tasks, size_t threads, const std::function<void(size_t)
     for (size_t t = 0; t < tasks; ++t) fn(t);
 }
 
-std::vector<FuzzyResult> finish_results(std::vector<Hit>& hits, bool sortable, size_t limit) {
-    auto less = [](const Hit& a, const Hit& b) { return a.key != b.key ? a.key < b.key : a.index < b.index; };
+std::vector<FuzzyResult> all_items(size_t count, size_t limit, bool tac) {
+    std::vector<FuzzyResult> results(limit ? std::min(limit, count) : count);
+    for (size_t i = 0; i < results.size(); ++i) results[i].index = static_cast<uint32_t>(tac ? count - 1 - i : i);
+    return results;
+}
+
+std::vector<FuzzyResult> finish_results(std::vector<Hit>& hits, bool sortable, size_t limit, bool tac) {
+    if (tac) std::reverse(hits.begin(), hits.end());  // descending index; the sorts below are stable on it
+    auto less = [tac](const Hit& a, const Hit& b) {
+        return a.key != b.key ? a.key < b.key : (tac ? a.index > b.index : a.index < b.index);
+    };
     if (sortable) {
         if (limit && hits.size() > limit) {
             std::nth_element(hits.begin(), hits.begin() + static_cast<ptrdiff_t>(limit), hits.end(), less);
@@ -187,11 +196,7 @@ std::vector<FuzzyResult> filter_impl(const FuzzyQuery& query, std::span<const T>
                                      bool with_positions, const CancellationToken* token) {
     const QueryImpl& q = query.impl();
     const size_t n = items.size();
-    if (q.empty) {
-        std::vector<FuzzyResult> results(limit ? std::min(limit, n) : n);
-        for (size_t i = 0; i < results.size(); ++i) results[i].index = static_cast<uint32_t>(i);
-        return results;
-    }
+    if (q.empty) return all_items(n, limit, q.options.tac);
     // Blocks of ~2048 typical (64-byte) items: long items get smaller blocks so they still spread
     // across threads.
     size_t bytes = 0;
@@ -220,7 +225,7 @@ std::vector<FuzzyResult> filter_impl(const FuzzyQuery& query, std::span<const T>
     std::vector<Hit> hits;
     hits.reserve(total);
     for (auto& v : per_block) hits.insert(hits.end(), v.begin(), v.end());
-    auto results = finish_results(hits, q.sortable, limit);
+    auto results = finish_results(hits, q.sortable, limit, q.options.tac);
     if (with_positions) fill_positions(q, results, [&](uint32_t i) { return std::string_view(items[i]); });
     return results;
 }

@@ -2,6 +2,7 @@
 
 #include "walk/dir_reader.h"
 
+#include <cerrno>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -18,10 +19,13 @@ EntryType type_from_mode(mode_t m) {
 
 } // namespace
 
-bool read_dir(const NativeString& dir, DirListing& out) {
+bool read_dir(const NativeString& dir, DirListing& out, std::error_code& ec) {
     out.clear();
     DIR* d = opendir(dir.c_str());
-    if (!d) return false;
+    if (!d) {
+        ec.assign(errno, std::system_category());
+        return false;
+    }
     std::string full;
     while (struct dirent* ent = readdir(d)) {
         const char* n = ent->d_name;

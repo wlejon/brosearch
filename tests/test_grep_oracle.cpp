@@ -61,7 +61,7 @@ TEST(grep, rg_oracle_corpus) {
         size_t tab = line.find('\t');
         std::string name = line.substr(0, tab);
         std::vector<std::string> args = shell_words(line.substr(tab + 1));
-        args.push_back(".");
+        if (name.rfind("explicit_", 0) != 0) args.push_back(".");  // explicit_*: paths given
         std::string expected = bt::read_file(bt::fixture_dir() / "grep" / (name + ".out"));
         std::string out, err;
         grep_oracle::run_rg_like(args, out, err);

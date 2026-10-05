@@ -91,25 +91,42 @@ uint64_t count_newlines(const uint8_t* p, size_t n) {
     return count;
 }
 
-size_t rg_binary_cutoff(const uint8_t* d, size_t len, size_t nul) {
+size_t rg_binary_cutoff(const uint8_t* d, size_t len, size_t nul, const CutoffContext* context) {
     size_t cap = size_t(64) << 10;
-    size_t consumed = 0;  // start of the unsearched partial line (everything before is searched)
+    size_t consumed = 0;   // buffer start: bytes before it were rolled out
+    size_t searched = 0;   // complete lines before this have been searched
     size_t read_end = 0;
     for (;;) {
         if (read_end - consumed == cap) cap *= 3;  // buffer full of one partial line: grow
         size_t next = std::min(len, read_end + (cap - (read_end - consumed)));
         // rg's BOM-sniffing reader hands back the (up to 3) peeked bytes as the first read.
         if (read_end == 0) next = std::min<size_t>(len, 3);
-        if (nul >= read_end && nul < next) return consumed;
+        if (nul >= read_end && nul < next) return searched;
         read_end = next;
         if (read_end >= len) return len;
-        // Search complete lines in the buffer: consume through the last '\n'.
+        // Search the complete lines in the buffer (through its last '\n'), then roll.
+        size_t last = 0;
         for (size_t i = read_end; i > consumed; --i) {
             if (d[i - 1] == '\n') {
-                consumed = i;
+                last = i;
                 break;
             }
         }
+        if (last == 0 || last <= searched) continue;
+        const size_t from = searched;
+        searched = last;
+        if (!context) {
+            consumed = last;
+            continue;
+        }
+        // Start of the line before_context lines before the buffer's last line.
+        size_t keep = last - 1;  // on the last line's '\n'
+        for (size_t k = 0;; ++k) {
+            while (keep > consumed && d[keep - 1] != '\n') --keep;
+            if (k == context->before_context || keep == consumed) break;
+            --keep;  // onto the previous line's '\n'
+        }
+        consumed = std::max({consumed, keep, context->visited(from, last)});
     }
 }
 

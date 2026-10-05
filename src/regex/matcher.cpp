@@ -16,6 +16,25 @@ size_t line_end(const uint8_t* data, size_t pos, size_t end) {
     return nl ? static_cast<size_t>(static_cast<const uint8_t*>(nl) - data) : end;
 }
 
+// rg's non_matching_bytes test for '\n' (grep-regex): a class containing it, or any line or
+// text anchor (grep-regex removes '\n' from the set for those, so such a pattern gets a
+// whole-buffer multiline search under -U).
+bool hir_touches_newline(const Hir& h) {
+    if (h.kind == Hir::Kind::Class) return h.set.contains('\n');
+    if (h.kind == Hir::Kind::Look) {
+        switch (h.look) {
+            case Look::StartLine: case Look::EndLine: case Look::StartText: case Look::EndText:
+            case Look::StartLineCrlf: case Look::EndLineCrlf:
+                return true;
+            default:
+                break;
+        }
+    }
+    for (const auto& s : h.subs)
+        if (hir_touches_newline(s)) return true;
+    return false;
+}
+
 } // namespace
 
 MatcherCache::MatcherCache(const Matcher& m)
@@ -25,6 +44,7 @@ std::shared_ptr<const Matcher> Matcher::build(const Hir& hir, size_t size_limit,
     auto m = std::make_shared<Matcher>();
     if (!compile_program(hir, false, size_limit, m->fwd_, error)) return nullptr;
     if (!compile_program(hir, true, size_limit, m->rev_, error)) return nullptr;
+    m->can_match_newline_ = hir_touches_newline(hir);
     m->lits_ = extract_literals(hir);
     m->prefilter_ = LiteralFinder(m->lits_.exact ? m->lits_.whole : m->lits_.required);
     if (m->prefilter_.empty() && !m->lits_.rare_bytes.empty()) m->prefilter_ = LiteralFinder::any_of(m->lits_.rare_bytes);

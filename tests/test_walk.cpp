@@ -7,7 +7,9 @@
 #include "brosearch/walk.h"
 #include "ignore/git_repo.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <mutex>
 #include <set>
@@ -60,7 +62,7 @@ TEST(walk, spec_trees) {
     for (const auto& e : fs::directory_iterator(bt::fixture_dir() / "walk"))
         if (e.path().extension() == ".spec") specs.push_back(e.path());
     std::sort(specs.begin(), specs.end());
-    CHECK(specs.size() >= 20);
+    CHECK(specs.size() >= 35);
     for (const auto& file : specs) {
         tree_spec::Spec spec;
         std::string err;
@@ -84,12 +86,23 @@ TEST(walk, spec_trees) {
             CHECK_MSG(false, name << ": " << err);
             continue;
         }
+        std::mutex mu;
+        std::set<std::string> failed;
+        o.on_error = [&](const WalkError& e) {
+            std::lock_guard<std::mutex> lk(mu);
+            failed.insert(std::string(e.rel_path));
+        };
         for (size_t threads : {size_t(1), size_t(0)}) {
             o.threads = threads;
             auto got = list_files(tree_spec::walk_root(spec, tree), o);
             CHECK_MSG(got == spec.expect, name << " (threads=" << threads << "): got " << bt::show(got)
                                                << " expected " << bt::show(spec.expect));
         }
+        // Exactly the @unreadable directories not pruned by an ignore rule are reported.
+        for (const auto& u : spec.unreadable)
+            CHECK_MSG(failed.count(u.dir) == (u.reported ? 1u : 0u), name << ": error reporting for " << u.dir);
+        if (spec.unreadable.empty()) CHECK_MSG(failed.empty(), name << ": unexpected walk errors");
+        tree_spec::restore(spec, tree);
         ++ran;
     }
     CHECK(ran >= 20);
@@ -252,6 +265,103 @@ TEST(walk, toggles_and_extra_sources) {
     for (const char* f : {"build/x", "bin/y", "out/z", "dist/w", "node_modules/m", "a.log", "b.tmp"})
         bt::write_file(plain / f, "");
     CHECK_EQ(collect(plain, hermetic()).size(), static_cast<size_t>(7));
+}
+
+// A directory the OS refuses to list is reported through on_error and skipped; the rest of the walk
+// goes on. POSIX: mode 000 (unreadable_posix.spec holds rg's messages for it); Windows: another
+// handle holding the directory with no sharing, so FindFirstFileExW fails with a sharing violation.
+TEST(walk, read_errors_reported) {
+    auto root = bt::scratch_dir("walk_errors");
+    bt::write_file(root / "a.txt", "");
+    bt::write_file(root / "locked" / "x.txt", "");
+    std::mutex mu;
+    std::vector<std::pair<std::string, int>> errs;
+    std::vector<WalkError::Op> ops;
+    WalkOptions o = hermetic();
+    o.on_error = [&](const WalkError& e) {
+        std::lock_guard<std::mutex> lk(mu);
+        errs.emplace_back(std::string(e.rel_path), e.error.value());
+        ops.push_back(e.op);
+        CHECK(e.native_path != nullptr);
+    };
+#ifdef _WIN32
+    HANDLE h = CreateFileW((root / "locked").c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    CHECK(h != INVALID_HANDLE_VALUE);
+    auto got = collect(root, o);
+    CloseHandle(h);
+    const int expected = ERROR_SHARING_VIOLATION;
+#else
+    fs::permissions(root / "locked", fs::perms::none);
+    bool enforced;
+    {
+        std::error_code ec;
+        fs::directory_iterator probe(root / "locked", ec);
+        enforced = static_cast<bool>(ec);
+    }
+    if (!enforced) {  // root: the mode is not enforced
+        fs::permissions(root / "locked", fs::perms::owner_all);
+        std::printf("  skip: permissions not enforced\n");
+        return;
+    }
+    auto got = collect(root, o);
+    fs::permissions(root / "locked", fs::perms::owner_all);
+    const int expected = EACCES;
+#endif
+    CHECK_EQ(got, (std::vector<std::string>{"a.txt"}));
+    CHECK_EQ(errs.size(), static_cast<size_t>(1));
+    if (errs.size() == 1) {
+        CHECK_EQ(errs[0].first, std::string("locked"));
+        CHECK_EQ(errs[0].second, expected);
+        CHECK(ops[0] == WalkError::Op::ReadDir);
+    }
+    // Readable again: no errors.
+    errs.clear();
+    ops.clear();
+    CHECK_EQ(collect(root, o), (std::vector<std::string>{"a.txt", "locked/x.txt"}));
+    CHECK(errs.empty());
+    // A root that does not exist: one Stat error, nothing listed.
+    CHECK(collect(root / "nope", o).empty());
+    CHECK_EQ(errs.size(), static_cast<size_t>(1));
+    if (errs.size() == 1) {
+        CHECK_EQ(errs[0].first, std::string());
+        CHECK(ops[0] == WalkError::Op::Stat);
+    }
+}
+
+// IgnoreDialect::Rg anchors global excludes, extra ignore files and -g globs at the path rg would
+// print (display_root joined with rel_path); rg_anchor*.spec check the same against rg.
+TEST(walk, rg_dialect_anchoring) {
+    auto root = bt::scratch_dir("walk_rg_anchor") / "tree";
+    auto side = bt::scratch_dir("walk_rg_anchor") / "side";
+    bt::write_file(root / ".git" / "config", "[core]\n");
+    bt::write_file(side / "global", "/top\nsub/x\n");
+    bt::write_file(side / "extra", "/e1\nsub/e2\n");
+    for (const char* f : {"top", "e1", "sub/top", "sub/x", "sub/e1", "sub/e2", "sub/sub/x", "sub/sub/e2"})
+        bt::write_file(root / f, "");
+    WalkOptions o = hermetic();
+    o.dialect = IgnoreDialect::Rg;
+    o.git_global = true;
+    o.git_global_file = side / "global";
+    o.extra_ignore_files.push_back(side / "extra");
+    o.display_root = ".";
+    CHECK_EQ(collect(root, o),
+             (std::vector<std::string>{"sub/e1", "sub/sub/e2", "sub/sub/x", "sub/top"}));
+    o.globs = {"!sub/sub"};
+    CHECK_EQ(collect(root, o), (std::vector<std::string>{"sub/e1", "sub/top"}));
+    o.globs.clear();
+    // rg run from the parent: `rg --files sub` sees "sub/top", "sub/x", "sub/sub/x", ...
+    o.display_root = "sub";
+    CHECK_EQ(collect(root / "sub", o), (std::vector<std::string>{"e1", "sub/e2", "sub/x", "top"}));
+    o.globs = {"!sub/top"};
+    CHECK_EQ(collect(root / "sub", o), (std::vector<std::string>{"e1", "sub/e2", "sub/x"}));
+    o.globs.clear();
+    // An absolute root as given: anchored patterns match nothing.
+    o.display_root.clear();
+    CHECK_EQ(collect(root / "sub", o).size(), static_cast<size_t>(6));
+    // Git: global excludes from the repository root, extra files from the walk root.
+    o.dialect = IgnoreDialect::Git;
+    CHECK_EQ(collect(root / "sub", o), (std::vector<std::string>{"e2", "sub/x", "top"}));
 }
 
 TEST(walk, glob_overrides) {

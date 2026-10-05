@@ -42,6 +42,11 @@ if [ -z "$fzf" ]; then
     fzf="$(command -v fzf || true)"
     [ -n "$fzf" ] || fzf="$HOME/go/bin/fzf"
 fi
+# Git Bash: the CLI launches fzf with CreateProcessW, which needs a Windows path.
+if command -v cygpath >/dev/null 2>&1; then
+    [ -e "$fzf" ] || [ ! -e "$fzf.exe" ] || fzf="$fzf.exe"
+    fzf="$(cygpath -m "$fzf")"
+fi
 [ -n "$tree" ] || { [ -d "$here/../bro/src" ] && tree="$here/../bro"; } || true
 
 status=0

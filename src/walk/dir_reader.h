@@ -56,8 +56,9 @@ struct DirListing {
     }
 };
 
-// Replaces `out` with the entries of `dir` ("." and ".." excluded). False if it cannot be opened.
-bool read_dir(const NativeString& dir, DirListing& out);
+// Replaces `out` with the entries of `dir` ("." and ".." excluded). False if it cannot be opened;
+// `ec` then holds the OS error (errno / GetLastError, in std::system_category).
+bool read_dir(const NativeString& dir, DirListing& out, std::error_code& ec);
 
 struct FileId {
     uint64_t dev = 0;

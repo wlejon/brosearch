@@ -9,7 +9,9 @@
 #
 # Real-tree mode (--real DIR): runs tests/fixtures/grep/real_queries.txt over DIR with -n
 # --column, comparing sorted output, and with --timing reports wall time (best of 3) for rg
-# (parallel, unsorted, output discarded) and brosearch-cli.
+# (parallel, unsorted) and brosearch-cli (parallel, sorted), both piped through cat: rg sends
+# nothing when stdout is /dev/null (it stops at the first match, like -q), so timing it with
+# output discarded measures a different search.
 #
 # Env: BROSEARCH_CLI (path to brosearch-cli), RG (path to rg).
 set -u
@@ -50,11 +52,14 @@ pass=0
 fail=0
 while IFS=$'\t' read -r name args; do
     case "$name" in ''|\#*) continue ;; esac
-    run_rg() { (cd "$corpus" && eval "timeout -s KILL 60 \"$rg\" --sort path --no-heading --path-separator / $args ." 2>&1); }
-    run_us() { (cd "$corpus" && eval "timeout -s KILL 60 \"$cli\" grep $args ." 2>&1); }
+    # explicit_* cases name their files; the rest search the whole corpus.
+    where=.
+    case "$name" in explicit_*) where= ;; esac
+    run_rg() { (cd "$corpus" && eval "timeout -s KILL 60 \"$rg\" --sort path --no-heading --path-separator / $args $where" 2>&1); }
+    run_us() { (cd "$corpus" && eval "timeout -s KILL 60 \"$cli\" grep $args $where" 2>&1); }
     if [ "$update" = 1 ]; then
         # Piped straight through (command substitution would drop NUL bytes).
-        (cd "$corpus" && eval "\"$rg\" --sort path --no-heading --path-separator / $args ." 2>&1) |
+        (cd "$corpus" && eval "\"$rg\" --sort path --no-heading --path-separator / $args $where" 2>&1) |
             "$cli" grep --write-fixture "$fix_native/$name.out"
     fi
     # Byte-exact comparison (NULs included).
@@ -74,7 +79,7 @@ else now_ms() { date +%s%N | cut -b1-13; }; fi
 best_of_3() {
     local best=999999999 t0 t1
     for _ in 1 2 3; do
-        t0=$(now_ms); "$@" > /dev/null 2>&1; t1=$(now_ms)
+        t0=$(now_ms); "$@" 2> /dev/null | cat > /dev/null; t1=$(now_ms)
         [ $((t1 - t0)) -lt "$best" ] && best=$((t1 - t0))
     done
     echo "$best"

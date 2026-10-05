@@ -228,7 +228,97 @@ IgnoreMatch m1(std::string_view rules, std::string_view path, bool is_dir = fals
     return gi.match(path, is_dir, icase);
 }
 
+IgnoreMatch r1(std::string_view rules, std::string_view path, bool is_dir = false, bool icase = false) {
+    Gitignore gi(IgnoreDialect::Rg);
+    gi.add_content(rules);
+    return gi.match(path, is_dir, icase);
+}
+
 } // namespace
+
+// ripgrep's globs (globset); the rg_*.spec walk trees hold the same cases against rg itself.
+TEST(ignore, rg_glob_syntax) {
+    CHECK(rg_glob_match("[[:digit:]]x", ":]x"));
+    CHECK(!rg_glob_match("[[:digit:]]x", "1x"));
+    CHECK(rg_glob_match("[\\]]x", "\\]x"));
+    CHECK(!rg_glob_match("[\\]]x", "]x"));
+    CHECK(rg_glob_match("[a-c-e]", "d"));
+    CHECK(!rg_glob_match("[a-c-e]", "-"));
+    CHECK(rg_glob_match("[a-]", "-"));
+    CHECK(rg_glob_match("[!]]", "x"));
+    CHECK(!rg_glob_match("[!]]", "]"));
+    CHECK(rg_glob_match("a[!b]c", "a/c"));
+    CHECK(rg_glob_match("a[/]c", "a/c"));
+    CHECK(!rg_glob_match("a?c", "a/c"));
+    CHECK(!rg_glob_match("a*c", "a/c"));
+    CHECK(rg_glob_match("x[ab", "x[ab"));
+    CHECK(!rg_glob_match("x[ab", "xa"));
+    CHECK(rg_glob_match("{p,q}z", "qz"));
+    CHECK(rg_glob_match("k{,1}m", "k1m"));
+    CHECK(!rg_glob_match("k{,1}m", "km"));
+    CHECK(rg_glob_match("a{b,{c,d}}e", "ade"));
+    CHECK(rg_glob_match("f{}g", "fg"));
+    CHECK(rg_glob_match("a,b", "a,b"));
+    CHECK(rg_glob_match("**", "a/b"));
+    CHECK(rg_glob_match("**/x", "x"));
+    CHECK(rg_glob_match("**/x", "a/b/x"));
+    CHECK(rg_glob_match("a/**/b", "a/b"));
+    CHECK(rg_glob_match("a/**/b", "a/x/y/b"));
+    CHECK(rg_glob_match("a/**", "a/x/y"));
+    CHECK(!rg_glob_match("a/**", "a"));
+    CHECK(rg_glob_match("a**b", "axxb"));
+    CHECK(!rg_glob_match("a**b", "a/b"));
+    // Bytewise, like globset's (?-u) regex: '?' is one byte, a class member's bytes are members.
+    CHECK(rg_glob_match("caf\xC3\xA9", "caf\xC3\xA9"));
+    CHECK(rg_glob_match("?", "\xC3"));
+    CHECK(!rg_glob_match("?", "\xC3\xA9"));
+    CHECK(rg_glob_match("[\xC3\xA9]", "\xA9"));
+    // ASCII case folding; a negated class folds before negating.
+    CHECK(rg_glob_match("ABC", "abc", true));
+    CHECK(!rg_glob_match("ABC", "abc", false));
+    CHECK(rg_glob_match("[a-c]", "B", true));
+    CHECK(!rg_glob_match("[^a]", "A", true));
+    CHECK(!rg_glob_match("\xC3\xA9", "\xC3\x89", true));
+    std::string err;
+    CHECK(!rg_glob_valid("n{a,b", &err));
+    CHECK(!err.empty());
+    CHECK(!rg_glob_valid("o}r"));
+    CHECK(!rg_glob_valid("[z-a]"));
+    CHECK(!rg_glob_valid("[a--]"));
+    CHECK(!rg_glob_valid("a\\"));
+    CHECK(rg_glob_valid("a\\/"));
+}
+
+TEST(ignore, rg_dialect_lines) {
+    // All trailing whitespace goes unless the line ends in "\ " (git keeps tabs).
+    CHECK(r1("tab\t\n", "tab") == IgnoreMatch::Ignore);
+    CHECK(m1("tab\t\n", "tab") == IgnoreMatch::None);
+    CHECK(r1("nb\xC2\xA0\n", "nb") == IgnoreMatch::Ignore);
+    CHECK(r1("esc\\ \n", "esc ") == IgnoreMatch::Ignore);
+    CHECK(r1("esc\\ \n", "esc") == IgnoreMatch::None);
+    // "esc\  " trims to a dangling backslash: an error, so no rule (git keeps "esc ").
+    CHECK(r1("esc\\  \n", "esc ") == IgnoreMatch::None);
+    CHECK(m1("esc\\  \n", "esc ") == IgnoreMatch::Ignore);
+    CHECK(r1("[[:digit:]]\n", "1") == IgnoreMatch::None);
+    CHECK(m1("[[:digit:]]\n", "1") == IgnoreMatch::Ignore);
+    CHECK(r1("a[!b]c\n", "x/a/c") == IgnoreMatch::Ignore);
+    CHECK(r1("*.a\n!\n", "x.a") == IgnoreMatch::Whitelist);
+    CHECK(m1("*.a\n!\n", "x.a") == IgnoreMatch::Ignore);
+    CHECK(r1("a\n\xFF\nb\n", "a") == IgnoreMatch::Ignore);
+    CHECK(r1("a\n\xFF\nb\n", "b") == IgnoreMatch::None);
+    CHECK(r1("foo/**\n", "foo", true) == IgnoreMatch::None);
+    CHECK(r1("foo/**\n", "foo/x") == IgnoreMatch::Ignore);
+    CHECK(r1("j\\/\n", "j", true) == IgnoreMatch::Ignore);
+    CHECK(r1("j\\/\n", "j", false) == IgnoreMatch::None);
+    CHECK(r1("\\!x\n", "!x") == IgnoreMatch::Ignore);
+    CHECK(r1("/top\n", "top") == IgnoreMatch::Ignore);
+    CHECK(r1("/top\n", "a/top") == IgnoreMatch::None);
+    CHECK(r1("lit\n", "a/b/lit") == IgnoreMatch::Ignore);
+    CHECK(r1("*.c\n", "a/B.C", false, true) == IgnoreMatch::Ignore);
+    Gitignore g(IgnoreDialect::Rg);
+    g.add_content("{a,b\n[z-a]\nok\n");
+    CHECK_EQ(g.size(), static_cast<size_t>(1));
+}
 
 TEST(ignore, rule_parsing) {
     Gitignore gi;

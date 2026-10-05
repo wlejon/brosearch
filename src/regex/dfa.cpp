@@ -156,7 +156,9 @@ uint32_t LazyDfa::compute(uint32_t s, uint32_t col, int byte) {
             }
         }
         uint32_t ns = intern(next_set_.data(), next_set_.size(), ctx_byte(byte));
-        entry = (ns << 1) | (matched ? 1u : 0u);
+        // Entries hold the next state's row offset (premultiplied by the stride), so the scan
+        // loops index the table without a multiply on their dependency chain.
+        entry = ((ns * stride_) << 1) | (matched ? 1u : 0u);
     }
     table_[static_cast<size_t>(s) * stride_ + col] = entry;
     return entry;
@@ -176,17 +178,20 @@ SearchResult LazyDfa::forward(const uint8_t* data, size_t len, size_t start, siz
                               bool earliest) {
     clears_ = 0;
     if (start > 0 && quit_[data[start - 1]]) return {SearchStatus::GaveUp, start};
-    uint32_t s = start_state(anchored, start > 0 ? ctx_byte(data[start - 1]) : static_cast<uint8_t>(kCtxNone));
+    const uint32_t stride = stride_;
+    // `off` is the current state's row offset in the table (state id * stride).
+    uint32_t off =
+        start_state(anchored, start > 0 ? ctx_byte(data[start - 1]) : static_cast<uint8_t>(kCtxNone)) * stride;
     constexpr size_t kNone = static_cast<size_t>(-1);
     size_t last = kNone;
     const uint8_t* cls = prog_.byte_class.data();
-    const uint32_t stride = stride_;
     const uint32_t* tab = table_.data();
     for (size_t i = start; i < end; ++i) {
         const uint8_t b = data[i];
-        uint32_t e = tab[static_cast<size_t>(s) * stride + cls[b]];
+        uint32_t e = tab[off + cls[b]];
         if (e == kUnknown) {
             if (quit_[b]) return {SearchStatus::GaveUp, i};
+            uint32_t s = off / stride;
             if (!maybe_clear(s)) return {SearchStatus::GaveUp, i};
             e = compute(s, cls[b], b);
             tab = table_.data();
@@ -195,14 +200,15 @@ SearchResult LazyDfa::forward(const uint8_t* data, size_t len, size_t start, siz
             last = i;
             if (earliest) return {SearchStatus::Match, i};
         }
-        s = e >> 1;
-        if (s == kDead) return last != kNone ? SearchResult{SearchStatus::Match, last} : SearchResult{};
+        off = e >> 1;
+        if (off == kDead) return last != kNone ? SearchResult{SearchStatus::Match, last} : SearchResult{};
     }
     int after = end < len ? data[end] : -1;
     if (after >= 0 && quit_[after]) return {SearchStatus::GaveUp, end};
     uint32_t col = after < 0 ? stride - 1 : cls[after];
-    uint32_t e = tab[static_cast<size_t>(s) * stride + col];
+    uint32_t e = tab[off + col];
     if (e == kUnknown) {
+        uint32_t s = off / stride;
         if (!maybe_clear(s)) return {SearchStatus::GaveUp, end};
         e = compute(s, col, after);
     }
@@ -214,30 +220,32 @@ SearchResult LazyDfa::reverse(const uint8_t* data, size_t len, size_t start, siz
     clears_ = 0;
     int after = end < len ? data[end] : -1;
     if (after >= 0 && quit_[after]) return {SearchStatus::GaveUp, end};
-    uint32_t s = start_state(true, ctx_byte(after));
+    const uint32_t stride = stride_;
+    uint32_t off = start_state(true, ctx_byte(after)) * stride;
     constexpr size_t kNone = static_cast<size_t>(-1);
     size_t best = kNone;
     const uint8_t* cls = prog_.byte_class.data();
-    const uint32_t stride = stride_;
     const uint32_t* tab = table_.data();
     for (size_t i = end; i > start; --i) {
         const uint8_t b = data[i - 1];
-        uint32_t e = tab[static_cast<size_t>(s) * stride + cls[b]];
+        uint32_t e = tab[off + cls[b]];
         if (e == kUnknown) {
             if (quit_[b]) return {SearchStatus::GaveUp, i - 1};
+            uint32_t s = off / stride;
             if (!maybe_clear(s)) return {SearchStatus::GaveUp, i};
             e = compute(s, cls[b], b);
             tab = table_.data();
         }
         if (e & 1u) best = i;
-        s = e >> 1;
-        if (s == kDead) return best != kNone ? SearchResult{SearchStatus::Match, best} : SearchResult{};
+        off = e >> 1;
+        if (off == kDead) return best != kNone ? SearchResult{SearchStatus::Match, best} : SearchResult{};
     }
     int before = start > 0 ? data[start - 1] : -1;
     if (before >= 0 && quit_[before]) return {SearchStatus::GaveUp, start};
     uint32_t col = before < 0 ? stride - 1 : cls[before];
-    uint32_t e = tab[static_cast<size_t>(s) * stride + col];
+    uint32_t e = tab[off + col];
     if (e == kUnknown) {
+        uint32_t s = off / stride;
         if (!maybe_clear(s)) return {SearchStatus::GaveUp, start};
         e = compute(s, col, before);
     }

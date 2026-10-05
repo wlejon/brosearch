@@ -39,10 +39,14 @@ int cli_grep(int argc, char** argv) {
     int rc = 0;
     int runs = probe.bench > 0 ? probe.bench : 1;
     double best = 1e300, total = 0;
+    // Normal runs stream each file's output to stdout; --bench collects it so only the last
+    // run's output is printed.
+    const grep_oracle::Writer to_stdout = [](std::string_view t) { std::fwrite(t.data(), 1, t.size(), stdout); };
     for (int r = 0; r < runs; ++r) {
         out.clear();
         auto t0 = std::chrono::steady_clock::now();
-        rc = grep_oracle::run_rg_like(args, out, err, &stats);
+        rc = probe.bench > 0 ? grep_oracle::run_rg_like(args, out, err, &stats)
+                             : grep_oracle::run_rg_like(args, to_stdout, err, &stats);
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         best = std::min(best, ms);
         total += ms;
@@ -51,7 +55,7 @@ int cli_grep(int argc, char** argv) {
         std::fprintf(stderr, "brosearch grep: %s\n", err.c_str());
         return 2;
     }
-    std::fwrite(out.data(), 1, out.size(), stdout);
+    if (probe.bench > 0) std::fwrite(out.data(), 1, out.size(), stdout);
     if (probe.bench > 0) std::fprintf(stderr, "best=%.2fms avg=%.2fms\n", best, total / runs);
     if (probe.stats) {
         std::fprintf(stderr, "%zu files searched, %zu matched, %zu matched lines, %zu matches, %llu bytes, %.2f ms\n",

@@ -5,7 +5,9 @@
 //
 // Spec format (one directive per line, '#' comments outside @expect):
 //   @oracle git|rg          tool whose output the @expect block holds
-//   @options w1 w2 ...      walker options (see apply_walk_option), e.g. hidden glob=!.git
+//   @options w1 w2 ...      walker options (see apply_walk_option), e.g. hidden glob=!.git;
+//                           ignore-file=REL (relative to the walk root). The walker follows the
+//                           oracle's dialect (IgnoreDialect::Rg for rg) unless dialect= says otherwise.
 //   @posix                  only meaningful on POSIX (non-UTF-8 names)
 //   @darwin                 only meaningful on macOS (core.precomposeUnicode, NFD names)
 //   @git DIR [ignorecase=true|false] [precompose=true|false]
@@ -16,6 +18,11 @@
 //   @dir PATH               empty directory
 //   @symlink PATH = TARGET  symbolic link (POSIX only; skipped where links cannot be made)
 //   @root DIR               walk tree/DIR instead of the tree root (oracle runs from there)
+//   @unreadable DIR [= pruned]
+//                           chmod 000 DIR once built (POSIX; skipped where it is not enforced).
+//                           The walk must report it, unless "pruned" (an ignore rule skips it);
+//                           diff_files.sh also compares the oracle's error messages. DIR is
+//                           relative to the tree, which such specs walk (no @root).
 //   @expect                rest of the file: expected `files` output, one path per line
 // PATH and TEXT take escapes: \n \r \t \\ \xHH (so names may hold spaces or raw bytes).
 // A filesystem may refuse names a spec needs (APFS rejects non-UTF-8 bytes): materialize() then
@@ -56,6 +63,11 @@ struct Spec {
     std::vector<GitRoot> git_roots;
     std::optional<std::string> global;
     std::vector<Entry> entries;
+    struct Unreadable {
+        std::string dir;     // made unreadable (mode 000) after materializing
+        bool reported;       // false: "= pruned", an ignore rule skips it before it is opened
+    };
+    std::vector<Unreadable> unreadable;
     std::vector<std::string> expect;
     std::string header;  // everything up to and including the "@expect" line, verbatim
 };
@@ -184,6 +196,9 @@ inline bool parse(std::string_view text, Spec& spec, std::string& err) {
             if (!found) { err = "@exclude before @git " + dir; return false; }
         } else if (kw == "@global") {
             spec.global = unescape(rest.size() >= 2 && rest.substr(0, 2) == "= " ? rest.substr(2) : rest);
+        } else if (kw == "@unreadable") {
+            split_assign(rest, lhs, rhs);
+            spec.unreadable.push_back({unescape(lhs), !(rhs && trim(*rhs) == "pruned")});
         } else if (kw == "@file" || kw == "@dir") {
             split_assign(rest, lhs, rhs);
             Entry e;
@@ -223,6 +238,7 @@ inline void write_bytes(const std::filesystem::path& p, std::string_view content
 inline std::string platform_skip(const Spec& spec) {
 #ifdef _WIN32
     if (spec.posix_only) return "POSIX-only spec";
+    if (!spec.unreadable.empty()) return "needs POSIX permissions";
 #endif
 #ifndef __APPLE__
     if (spec.darwin_only) return "macOS-only spec";
@@ -271,7 +287,24 @@ inline std::string materialize(const Spec& spec, const std::filesystem::path& tr
         if (ex.code() == std::errc::illegal_byte_sequence) return std::string("filesystem refuses a name: ") + ex.what();
         throw;
     }
+    for (const auto& u : spec.unreadable) {
+        const auto p = tree / u8path(u.dir);
+        std::filesystem::permissions(p, std::filesystem::perms::none);
+        std::error_code ec;
+        std::filesystem::directory_iterator probe(p, ec);
+        if (!ec) {  // e.g. running as root: the mode is not enforced
+            std::filesystem::permissions(p, std::filesystem::perms::owner_all);
+            return "permissions are not enforced here (root?)";
+        }
+    }
     return {};
+}
+
+// Gives @unreadable directories back their permissions so the tree can be deleted.
+inline void restore(const Spec& spec, const std::filesystem::path& tree) {
+    std::error_code ec;
+    for (const auto& u : spec.unreadable)
+        std::filesystem::permissions(tree / u8path(u.dir), std::filesystem::perms::owner_all, ec);
 }
 
 inline std::filesystem::path walk_root(const Spec& spec, const std::filesystem::path& tree) {
@@ -303,6 +336,10 @@ inline bool apply_walk_option(bro::search::WalkOptions& o, std::string_view w) {
         else if (*v4 == "sensitive") o.ignore_case = bro::search::CaseMode::Sensitive;
         else if (*v4 == "insensitive") o.ignore_case = bro::search::CaseMode::Insensitive;
         else return false;
+    } else if (auto v6 = val("dialect")) {
+        if (*v6 == "git") o.dialect = bro::search::IgnoreDialect::Git;
+        else if (*v6 == "rg") o.dialect = bro::search::IgnoreDialect::Rg;
+        else return false;
     } else if (auto v5 = val("precompose")) {
         if (*v5 == "auto") o.precompose_unicode = bro::search::Precompose::Auto;
         else if (*v5 == "on") o.precompose_unicode = bro::search::Precompose::On;
@@ -317,8 +354,15 @@ inline bool walk_options(const Spec& spec, const std::filesystem::path& tree, br
                          std::string& err) {
     o = bro::search::WalkOptions();
     o.parents = false;  // never pick up ignore files from wherever the scratch dir lives
+    // Each oracle's own reading of ignore files; rg runs from the walk root with no path argument.
+    o.dialect = spec.oracle == "rg" ? bro::search::IgnoreDialect::Rg : bro::search::IgnoreDialect::Git;
+    o.display_root = ".";
     for (const auto& w : spec.options) {
         if (w == "parents") { o.parents = true; continue; }
+        if (w.rfind("ignore-file=", 0) == 0) {  // relative to the walk root, as rg (run there) takes it
+            o.extra_ignore_files.push_back(walk_root(spec, tree) / u8path(w.substr(12)));
+            continue;
+        }
         if (!apply_walk_option(o, w)) { err = "unknown option: " + w; return false; }
     }
     if (spec.global) o.git_global_file = global_file_for(tree);

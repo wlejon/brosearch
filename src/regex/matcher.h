@@ -41,6 +41,9 @@ public:
     std::optional<MatchSpan> find(MatcherCache& c, const uint8_t* data, size_t len, size_t start, size_t end) const;
 
     bool is_exact_literal() const { return lits_.exact; }
+    // Whether '\n' is outside rg's "non-matching bytes" of the pattern: some match can contain
+    // it, or the pattern has a line or text anchor. rg -U searches such patterns as one buffer.
+    bool can_match_newline() const { return can_match_newline_; }
     const Program& forward() const { return fwd_; }
     const Program& reverse() const { return rev_; }
     const LiteralFinder& prefilter() const { return prefilter_; }
@@ -50,6 +53,7 @@ private:
     Program rev_;
     LiteralInfo lits_;
     LiteralFinder prefilter_;  // exact literal when lits_.exact, else the required literal (may be empty)
+    bool can_match_newline_ = false;
 
     std::optional<size_t> line_via_automata(MatcherCache& c, const uint8_t* data, size_t len, size_t ls,
                                             size_t le) const;

@@ -386,8 +386,15 @@ private:
                 std::string key;
                 for (char k : name.substr(0, eq))
                     if (k != ' ' && k != '_' && k != '-') key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(k))));
-                if (key != "gc" && key != "generalcategory") fail("unsupported Unicode property: " + name);
-                name = name.substr(eq + 1);
+                std::string value = name.substr(eq + 1);
+                CharSet s;
+                bool ok = false;
+                if (key == "gc" || key == "generalcategory") ok = unicode_general_category(value, &s);
+                else if (key == "sc" || key == "script") ok = unicode_script(value, false, &s);
+                else if (key == "scx" || key == "scriptextensions") ok = unicode_script(value, true, &s);
+                else fail("unsupported Unicode property: " + name);
+                if (!ok) fail("unsupported or unknown Unicode class: " + name);
+                return s;
             }
         } else {
             if (eof()) fail("missing Unicode class name");

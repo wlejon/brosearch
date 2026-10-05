@@ -50,11 +50,19 @@ struct IgnoreConfig {
     bool icase = false;
     bool glob_icase = false;
     bool any_rules = false;     // any ignore source enabled (ripgrep's has_any_ignore_rules)
-    Gitignore overrides;        // -g globs (match inverted)
+    IgnoreDialect dialect = IgnoreDialect::Git;
+    // Rg: overrides, global excludes and extra ignore files match the path as ripgrep prints it,
+    // this prefix (the root as given, e.g. "." or "src" or "/abs/dir") joined with `rel`.
+    std::string rg_prefix;
+    Gitignore overrides;        // -g globs (match inverted); Git: relative to the walk root
     size_t override_includes = 0;
-    Gitignore global;           // global excludes, relative to the nearest repository root
+    Gitignore global;           // global excludes; Git: relative to the nearest repository root
     bool has_global = false;
-    Gitignore explicit_files;   // extra_ignore_files, relative to the walk root
+    Gitignore explicit_files;   // extra_ignore_files; Git: relative to the walk root
+
+    // The ripgrep candidate path for `rel` (see rg_prefix), with the ignore crate's stripping of a
+    // leading "./" and, unless it is a bare name, a leading '/'.
+    [[nodiscard]] std::string_view rg_candidate(std::string_view rel, std::string& scratch) const;
 
     // Decides one entry. `rel` is relative to the walk root; `node` is its directory's node.
     [[nodiscard]] IgnoreMatch matched(const DirNode& node, std::string_view rel, bool is_dir,

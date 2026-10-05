@@ -15,19 +15,19 @@ The bar is agreement with the reference tools, which the test suite holds it to:
 
 | Header | What |
 |--------|------|
-| `fuzzy.h` | `FuzzyQuery` / `fuzzy_match` / `fuzzy_filter`: fzf's v2 algorithm (with its V1 fallback for long items) and fzf's extended query syntax (`'exact ^prefix suffix$ !not a\|b`), with smart case, Latin diacritic folding and fzf's default, path and history scoring schemes. Ranking and tie-breaks match fzf. Batch filtering is multithreaded and can be cancelled. |
+| `fuzzy.h` | `FuzzyQuery` / `fuzzy_match` / `fuzzy_filter`: fzf's v2 algorithm (with its V1 fallback for long items) and fzf's extended query syntax (`'exact ^prefix suffix$ !not a\|b`), with smart case, Latin diacritic folding and fzf's default, path and history scoring schemes. Ranking and tie-breaks match fzf. `--nth` / `--delimiter` field matching and `--tac` are supported, and `fuzzy_display` renders items as fzf prints them (invalid UTF-8 as U+FFFD). Batch filtering is multithreaded and can be cancelled. |
 | `fuzzy_index.h` | `FuzzyIndex`: an append-only item store for incremental and streaming use. Searches run concurrently with `add()`, and a refined query only re-scans the matches cached from its prefix, as in fzf. Results always equal a cold search. |
-| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics. `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg; `Precompose::Auto` follows `core.precomposeUnicode` on macOS. |
-| `walk.h` | `walk` / `list_files`: a parallel directory walk with pruning. It honours `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, global excludes and parent-directory ignore files with rg's precedence, plus `-g` overrides. Nothing is ignored by default beyond what rg ignores. |
+| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics, or rg's (`IgnoreDialect::Rg`, `rg_glob_match`: the ignore and globset crates). `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg; `Precompose::Auto` follows `core.precomposeUnicode` on macOS. |
+| `walk.h` | `walk` / `list_files`: a parallel directory walk with pruning. It honours `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, global excludes and parent-directory ignore files with rg's precedence, plus `-g` overrides. Nothing is ignored by default beyond what rg ignores. Unreadable directories are reported through `WalkOptions::on_error` (the CLI prints rg's messages and exits 2). |
 | `regex.h` | `Regex`: our own linear-time engine with Rust/rg syntax (see below). |
-| `grep.h` | `Grep`: rg-compatible line search over buffers, files, file lists and trees. Covers fixed strings, smart/insensitive case, `-w`/`-x`, invert, context lines, max count, UTF-8 and UTF-16 BOM decoding, binary detection (rg's quit/convert models), stats and prompt cancellation. Also has terminal helpers `detect_urls` / `detect_git_hashes`. |
+| `grep.h` | `Grep`: rg-compatible line search over buffers, files, file lists and trees. Covers fixed strings, smart/insensitive case, `-w`/`-x`, invert, context lines, max count, `-U` multiline (with `--multiline-dotall`), UTF-8 and UTF-16 BOM decoding, binary detection (rg's quit/convert models), stats and prompt cancellation. Also has terminal helpers `detect_urls` / `detect_git_hashes`. |
 | `cancellation_token.h` | `CancellationSource` / `CancellationToken`, accepted by every long-running call. |
 
 ## Regex engine (`src/regex/`)
 
 It has no dependencies: RE2 would pull in abseil, and PCRE backtracks.
 
-- The parser goes straight to a HIR. Flags are applied there: Unicode simple case folding, `\w`, `\d`, `\s`, general categories, and the grep line terminator ban.
+- The parser goes straight to a HIR. Flags are applied there: Unicode simple case folding, `\w`, `\d`, `\s`, general categories, scripts and script extensions (`\p{Greek}`, `\p{scx=Hira}`), and the grep line terminator ban.
 - The HIR compiles to a byte-level Thompson NFA, with UTF-8 range compilation for both the forward and reverse programs.
 - **Lazy DFA.** Its states carry the previous byte's context class, so every look-around is exact (`^ $ \b \B`, half boundaries). It uses leftmost-first semantics, and a reverse DFA finds where a match starts.
 - **PikeVM fallback.** It handles Unicode `\b` next to non-ASCII bytes and DFA cache thrash.
@@ -51,7 +51,7 @@ carry oracle-derived expectations and do not need fzf, rg or git installed:
 
 - `tests/fixtures/fuzzy` holds fzf output.
 - `tests/fixtures/walk/*.spec` holds tree specs with the expected `rg --files` / git results.
-- `tests/fixtures/grep` holds 59 rg outputs over an adversarial corpus that the tests generate (`tests/grep_oracle.h`).
+- `tests/fixtures/grep` holds 107 rg outputs over an adversarial corpus that the tests generate (`tests/grep_oracle.h`).
 
 ### Live differential runners
 
@@ -67,12 +67,21 @@ scripts/diff_fuzzy.sh ...                                     # vs fzf --filter
 ## Known differences and gaps
 
 - **Grep and regex:**
-  - No `\p{Script}` properties.
-  - No `-U` multiline mode.
-  - `-c` on an explicitly named binary file (rg's convert mode) may count differently.
+  - Explicitly named files follow rg's `--no-mmap` path. rg memory-maps a handful of explicitly named files on
+    Windows and Linux (never on macOS), and its mmap path handles binary data differently; the `explicit_*`
+    fixtures pass `--no-mmap`.
   - The rg front end lives in `tests/grep_oracle.h`. It collects whole-file results, so output-heavy searches (hundreds of thousands of lines) are slower than rg's streaming printer.
+- **Fuzzy:** the tables are Unicode 16. fzf 0.74.4 is built with Go 1.25.6, whose tables are still Unicode 15.0.0, so
+  case folding of code points new in Unicode 16 can differ from fzf.
 - **Ignore:** the library default is git's case behaviour (`CaseMode::Auto`), while rg always matches case-sensitively.
   Outside a repository, `Auto` on macOS asks the volume (`pathconf(_PC_CASE_SENSITIVE)`).
+  - `IgnoreDialect::Git` (the default) reads ignore files and globs as git does; `IgnoreDialect::Rg` as rg 15
+    does (trailing tabs trimmed, globset classes and `{a,b}`, anchoring of global excludes / `--ignore-file` /
+    `-g` at the path rg prints; see `ignore.h` and `WalkOptions::dialect`). The `rg_*.spec` trees hold rg's
+    output. Older rg releases differ (rg 13/14 reject nested `{}` and unclosed `[`, and drop an ignore file
+    with invalid UTF-8 entirely), so run `scripts/diff_files.sh` against rg 15.
+  - rg 15.2 on Windows never matches a `-g` glob with a leading `/`; this is not reproduced (rg on macOS and
+    Linux anchors it at the root, as we do).
 - **macOS names:** with `Precompose::Auto` (the default) a walk inside a repository with
   `core.precomposeUnicode=true` (what `git init` writes on macOS) matches and reports NFD names in NFC, through the
   same iconv `UTF-8-MAC` conversion git uses; `WalkEntry::native_path` keeps the stored bytes. rg never precomposes

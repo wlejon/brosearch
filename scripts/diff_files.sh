@@ -47,7 +47,7 @@ if [ $TREES = 1 ]; then
         # rg matches ignore patterns case-sensitively and never precomposes names; the library
         # defaults (auto) follow the repository's core.ignorecase / core.precomposeUnicode, which
         # differ wherever a pattern matches only by case or (macOS) only after NFD -> NFC.
-        b=$(cd "$d" && "$CLI" files --sort --case=sensitive --precompose=off)
+        b=$(cd "$d" && "$CLI" files --sort --case=sensitive --precompose=off --dialect=rg)
         na=$(printf '%s\n' "$a" | grep -c .)
         nb=$(printf '%s\n' "$b" | grep -c .)
         if [ "$a" == "$b" ]; then echo "SAME  $d ($na files)"; else
@@ -74,7 +74,7 @@ fi
 SPECS=("${ARGS[@]}")
 [ ${#SPECS[@]} -eq 0 ] && SPECS=("$ROOT"/tests/fixtures/walk/*.spec)
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+trap 'chmod -R u+rwx "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT  # @unreadable dirs are mode 000
 pass=0; fail=0; skip=0
 for spec in "${SPECS[@]}"; do
     name=$(basename "$spec" .spec)
@@ -103,14 +103,22 @@ for spec in "${SPECS[@]}"; do
         rgargs=()
         while IFS= read -r a; do rgargs+=("$a"); done < <("$CLI" files --rg-args "$spec" | tr -d '\r')
         expect=$(cd "$wroot" && HOME="$home" USERPROFILE="$home" XDG_CONFIG_HOME= \
-                 "$RG" --files ${rgargs[@]+"${rgargs[@]}"} | tr '\\' '/' | LC_ALL=C sort)
+                 "$RG" --files ${rgargs[@]+"${rgargs[@]}"} 2>"$tree.oracle.err" | tr '\\' '/' | LC_ALL=C sort)
     fi
-    ours=$("$CLI" files --run-spec "$spec" "$tree")
-    if [ "$expect" == "$ours" ]; then
+    ours=$("$CLI" files --run-spec "$spec" "$tree" 2>"$tree.ours.err")
+    # @unreadable specs: the error messages must match too (rg prefixes "rg: ", we "brosearch-cli: ").
+    errdiff=""
+    if [ "$oracle" = rg ] && grep -q '^@unreadable' "$spec"; then
+        e1=$(sed 's/^rg: //' "$tree.oracle.err" | tr '\\' '/' | LC_ALL=C sort)
+        e2=$(sed 's/^brosearch-cli: //' "$tree.ours.err" | LC_ALL=C sort)
+        [ "$e1" == "$e2" ] || errdiff=$(diff <(printf '%s\n' "$e1") <(printf '%s\n' "$e2"))
+    fi
+    if [ "$expect" == "$ours" ] && [ -z "$errdiff" ]; then
         pass=$((pass + 1)); echo "SAME  $name ($oracle)"
     else
         fail=$((fail + 1)); echo "DIFF  $name ($oracle)   < $oracle   > brosearch"
         diff <(printf '%s\n' "$expect") <(printf '%s\n' "$ours") | head -30
+        [ -z "$errdiff" ] || { echo "  errors:"; printf '%s\n' "$errdiff" | head -20; }
     fi
     if [ $UPDATE = 1 ]; then printf '%s\n' "$expect" | "$CLI" files --update-spec "$spec"; fi
 done

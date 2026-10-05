@@ -98,3 +98,18 @@
 --algo=v1	rend
 --algo=v1	scene
 --algo=v1	sc gl
+--tac	rend
+--tac	sc gl
+--tac
+--tac --no-sort	src
+--nth=1 --delimiter=/	src
+--nth=-1 --delimiter=/	cpp$
+--nth=2.. --delimiter=/	render
+--nth=..2 --delimiter=/	srcren
+--nth=2,1 --delimiter=/	gl
+--nth=1	ren
+--nth=-1 --delimiter=[/.]	h$
+--nth=2 --delimiter=/ --tiebreak=begin	e
+--nth=2 --delimiter=/ --scheme=path	sc
+--nth=1..-2 --delimiter=/	engine
+--nth=-1 --delimiter=/ --tac	main

@@ -10,6 +10,9 @@
 //     --tiebreak=L         comma list of length,chunk,pathname,begin,end,index
 //     --algo=v1|v2
 //     --no-sort            keep input order
+//     --tac                reverse the input order
+//     -n, --nth=RANGES     match only these fields (fzf syntax: 1,3..,-1)
+//     -d, --delimiter=D    field delimiter for --nth (default: AWK-style whitespace)
 //     --read0              items are NUL-separated
 //     --posix-path         path scheme: '\\' is not a delimiter (fzf on Linux/macOS)
 //     --windows-path       path scheme: '\\' is a delimiter (fzf on Windows)
@@ -120,6 +123,12 @@ bool apply_flag(const char* a, FuzzyOptions& opts) {
         else return false;
     } else if (starts(a, "--tiebreak=")) {
         if (!parse_tiebreak(a + 11, opts.tiebreak)) return false;
+    } else if (!std::strcmp(a, "--tac")) {
+        opts.tac = true;
+    } else if (starts(a, "--nth=")) {
+        if (!parse_fuzzy_nth(a + 6, opts.nth)) return false;
+    } else if (starts(a, "--delimiter=")) {
+        opts.delimiter = a + 12;
     } else {
         return false;
     }
@@ -216,37 +225,7 @@ std::string run_capture(const std::string& cmd, const std::string& input_file = 
 #endif
 
 // What fzf prints for an item: Go's string([]rune) turns invalid UTF-8 bytes into U+FFFD.
-std::string go_printed(const std::string& s) {
-    std::string out;
-    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
-    size_t i = 0;
-    while (i < s.size()) {
-        if (p[i] < 0x80) {
-            out.push_back(static_cast<char>(p[i++]));
-            continue;
-        }
-        // Validate one UTF-8 sequence (same rules as Go's utf8.DecodeRune).
-        size_t need = p[i] >= 0xC2 && p[i] <= 0xDF ? 2 : p[i] >= 0xE0 && p[i] <= 0xEF ? 3 : p[i] >= 0xF0 && p[i] <= 0xF4 ? 4 : 0;
-        bool ok = need && i + need <= s.size();
-        if (ok) {
-            unsigned char lo = 0x80, hi = 0xBF;
-            if (p[i] == 0xE0) lo = 0xA0;
-            else if (p[i] == 0xED) hi = 0x9F;
-            else if (p[i] == 0xF0) lo = 0x90;
-            else if (p[i] == 0xF4) hi = 0x8F;
-            ok = p[i + 1] >= lo && p[i + 1] <= hi;
-            for (size_t k = 2; ok && k < need; ++k) ok = (p[i + k] & 0xC0) == 0x80;
-        }
-        if (ok) {
-            out.append(s, i, need);
-            i += need;
-        } else {
-            out += "\xEF\xBF\xBD";
-            ++i;
-        }
-    }
-    return out;
-}
+std::string go_printed(const std::string& s) { return fuzzy_display(s).text; }
 
 struct OracleQuery {
     std::vector<std::string> flags;
@@ -387,6 +366,7 @@ int fuzzy_oracle(int argc, char** argv) {
             std::fprintf(stderr, "oracle: bad flags for query '%s'\n", oq.query.c_str());
             return 2;
         }
+        if (opts.tac) opts.sort = true;  // as cli_fuzzy: fzf --filter sorts under --tac
         auto t0 = std::chrono::steady_clock::now();
         std::string raw =
             run_capture(shell_quote(fzf) + " --filter=" + shell_quote(oq.query) + fzf_flags, corpus_path);
@@ -430,14 +410,17 @@ int fuzzy_oracle(int argc, char** argv) {
         }
 
         if (!record_path.empty()) {
-            // fzf output -> item indices (duplicates are emitted in index order).
+            // fzf output -> item indices (duplicates are emitted in index order, reversed by --tac).
             std::map<std::string, std::deque<uint32_t>> where;
             for (uint32_t i = 0; i < items.size(); ++i) where[printed[i]].push_back(i);
             std::vector<uint32_t> idx;
             for (auto& w : want) {
                 auto& d = where[w];
-                idx.push_back(d.empty() ? UINT32_MAX : d.front());
-                if (!d.empty()) d.pop_front();
+                idx.push_back(d.empty() ? UINT32_MAX : opts.tac ? d.back() : d.front());
+                if (!d.empty()) {
+                    if (opts.tac) d.pop_back();
+                    else d.pop_front();
+                }
             }
             char hbuf[32];
             std::snprintf(hbuf, sizeof hbuf, "%016llx", static_cast<unsigned long long>(fnv_indices(idx)));
@@ -474,7 +457,14 @@ int cli_fuzzy(int argc, char** argv) {
         else if (!std::strcmp(a, "--index")) use_index = true;
         else if (starts(a, "--limit=")) limit = std::strtoull(a + 8, nullptr, 10);
         else if (starts(a, "--bench=")) bench = std::atoi(a + 8);
-        else if (starts(a, "--filter=")) {
+        else if ((!std::strcmp(a, "-n") || !std::strcmp(a, "--nth")) && i + 1 < argc) {
+            if (!parse_fuzzy_nth(argv[++i], opts.nth)) {
+                std::fprintf(stderr, "fuzzy: invalid --nth: %s\n", argv[i]);
+                return 2;
+            }
+        } else if ((!std::strcmp(a, "-d") || !std::strcmp(a, "--delimiter")) && i + 1 < argc) {
+            opts.delimiter = argv[++i];
+        } else if (starts(a, "--filter=")) {
             query = a + 9;
             have_query = true;
         } else if ((!std::strcmp(a, "-f") || !std::strcmp(a, "--filter")) && i + 1 < argc) {
@@ -509,6 +499,9 @@ int cli_fuzzy(int argc, char** argv) {
         }
     }
 
+    // fzf --filter streams unsorted results only without --tac; with it, the matcher sorts
+    // whenever the pattern is sortable (core.go: matcher.sort = pattern.sortable).
+    if (opts.tac) opts.sort = true;
     FuzzyQuery q(query, opts);
     std::vector<FuzzyResult> results;
     auto run = [&] {
@@ -547,7 +540,7 @@ int cli_fuzzy(int argc, char** argv) {
             }
             out.push_back('\t');
         }
-        out.append(items[r.index]);
+        out += fuzzy_display(items[r.index]).text;  // invalid UTF-8 shows as U+FFFD, as in fzf
         out.push_back(read0 ? '\0' : '\n');
     }
     std::fwrite(out.data(), 1, out.size(), stdout);

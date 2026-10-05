@@ -3,6 +3,7 @@
 
 #include "brosearch/fuzzy.h"
 #include "fuzzy/fuzzy_algo.h"
+#include "fuzzy/fuzzy_fields.h"
 
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@ struct PreparedItem {
     Chars chars;
     const uint32_t* byte_offsets = nullptr;  // rune index -> byte offset; null for ASCII items
     uint32_t byte_len = 0;
+    std::string_view text;                   // the item's bytes (for regex field delimiters)
 };
 
 // Per-thread scratch used by matching.
@@ -33,6 +35,7 @@ struct MatchScratch {
     std::vector<int32_t> all_pos;
     std::vector<uint32_t> runes;    // decode buffer for non-ASCII items
     std::vector<uint32_t> offsets;  // decode buffer for non-ASCII items
+    std::vector<FieldSlice> fields;
 };
 
 struct QueryImpl {
@@ -49,6 +52,7 @@ struct QueryImpl {
     std::string cache_key;
     AlgoFn fuzzy_algo = nullptr;
     std::vector<std::vector<Term>> term_sets;  // non-extended mode: one set with one term
+    FieldSpec fields;                          // --nth (inactive when options.nth is empty)
 
     void build(std::string_view query, const FuzzyOptions& opts);
 

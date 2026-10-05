@@ -2,12 +2,17 @@
 
 #include "regex/unicode.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
+#include <utility>
 
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #define BROSEARCH_SSE2 1
 #include <emmintrin.h>
+#elif defined(__ARM_NEON) || defined(_M_ARM64)
+#define BROSEARCH_NEON 1
+#include <arm_neon.h>
 #endif
 
 namespace bro::search::rx {
@@ -241,10 +246,10 @@ LiteralInfo extract_literals(const Hir& hir) {
     } else {
         required(hir, info.required);
     }
-    // A single common byte is a poor prefilter: the automaton alone is faster.
+    // A single common byte is a poor prefilter: the automaton alone is faster. Two bytes or more
+    // are always worth it: the packed-pair search (LiteralFinder) runs far ahead of the DFA
+    // however common the bytes are.
     if (info.required.size() == 1 && byte_rank(info.required[0].b) > 100) info.required.clear();
-    if (info.required.size() == 2 && byte_rank(info.required[0].b) > 150 && byte_rank(info.required[1].b) > 150)
-        info.required.clear();
     if (info.exact && info.required.empty()) info.required = info.whole;
     if (info.required.empty()) {
         // Every byte must be fairly rare, or scanning for the set costs more than the automaton.
@@ -313,6 +318,83 @@ LiteralFinder::LiteralFinder(Literal lit) : lit_(std::move(lit)) {
         rare_a_ = lit_[rare_].b;
         rare_b_ = rare_ci_ ? static_cast<uint8_t>(rare_a_ - 32) : rare_a_;
     }
+    // The pair: the rarest byte and the rarest other byte (prefer one at a different value, so
+    // "aa" style literals still filter on two positions).
+    if (lit_.size() >= 2) {
+        pair_[0] = rare_;
+        int best2 = 1 << 30;
+        for (size_t i = 0; i < lit_.size(); ++i) {
+            if (i == rare_) continue;
+            int r = byte_rank(lit_[i].b) + (lit_[i].ci ? 10 : 0) + (lit_[i].b == lit_[rare_].b ? 64 : 0);
+            if (r < best2) {
+                best2 = r;
+                pair_[1] = i;
+            }
+        }
+        if (pair_[1] < pair_[0]) std::swap(pair_[0], pair_[1]);
+    }
+}
+
+namespace {
+// Byte at `p` compared with literal byte `l` (ASCII case folded when `ci`).
+inline bool lit_eq(uint8_t c, const LitByte& l) { return l.ci ? (c | 0x20) == l.b : c == l.b; }
+} // namespace
+
+// Two-byte "packed pair" search (as in the memchr crate's generic memmem): candidates are the
+// positions where both chosen bytes of the literal sit at their offsets, found 16 at a time; each
+// is then verified. Unlike a memchr on one byte this stays fast when every byte is common.
+size_t LiteralFinder::find_pair(const uint8_t* hay, size_t start, size_t end) const {
+    const size_t n = lit_.size();
+    const size_t i1 = pair_[0], i2 = pair_[1];
+    const LitByte& l1 = lit_[i1];
+    const LitByte& l2 = lit_[i2];
+    const uint8_t* p = hay + start;
+    const uint8_t* const last = hay + end - n;  // last candidate start (end - start >= n here)
+#if defined(BROSEARCH_SSE2) || defined(BROSEARCH_NEON)
+    // A block of 16 candidates needs bytes up to p + i2 + 15 < hay + end.
+    if (end - start >= i2 + 16) {
+        const uint8_t* const block_last = hay + end - i2 - 16;
+#if defined(BROSEARCH_SSE2)
+        const __m128i v1 = _mm_set1_epi8(static_cast<char>(l1.b));
+        const __m128i v2 = _mm_set1_epi8(static_cast<char>(l2.b));
+        const __m128i f1 = _mm_set1_epi8(l1.ci ? 0x20 : 0);
+        const __m128i f2 = _mm_set1_epi8(l2.ci ? 0x20 : 0);
+        for (; p <= block_last; p += 16) {
+            __m128i a = _mm_or_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i1)), f1);
+            __m128i b = _mm_or_si128(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i2)), f2);
+            unsigned m = static_cast<unsigned>(
+                _mm_movemask_epi8(_mm_and_si128(_mm_cmpeq_epi8(a, v1), _mm_cmpeq_epi8(b, v2))));
+            while (m) {
+                const uint8_t* s = p + std::countr_zero(m);
+                if (s <= last && verify(s)) return static_cast<size_t>(s - hay);
+                m &= m - 1;
+            }
+        }
+#else
+        const uint8x16_t v1 = vdupq_n_u8(l1.b);
+        const uint8x16_t v2 = vdupq_n_u8(l2.b);
+        const uint8x16_t f1 = vdupq_n_u8(l1.ci ? 0x20 : 0);
+        const uint8x16_t f2 = vdupq_n_u8(l2.ci ? 0x20 : 0);
+        for (; p <= block_last; p += 16) {
+            uint8x16_t a = vorrq_u8(vld1q_u8(p + i1), f1);
+            uint8x16_t b = vorrq_u8(vld1q_u8(p + i2), f2);
+            uint8x16_t eq = vandq_u8(vceqq_u8(a, v1), vceqq_u8(b, v2));
+            // Four mask bits per byte.
+            uint64_t m = vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0);
+            while (m) {
+                const unsigned bit = static_cast<unsigned>(std::countr_zero(m));
+                const uint8_t* s = p + bit / 4;
+                if (s <= last && verify(s)) return static_cast<size_t>(s - hay);
+                m &= ~(uint64_t(0xF) << (bit & ~3u));
+            }
+        }
+#endif
+    }
+#endif
+    for (; p <= last; ++p) {
+        if (lit_eq(p[i1], l1) && lit_eq(p[i2], l2) && verify(p)) return static_cast<size_t>(p - hay);
+    }
+    return SIZE_MAX;
 }
 
 bool LiteralFinder::verify(const uint8_t* p) const {
@@ -340,6 +422,7 @@ size_t LiteralFinder::find(const uint8_t* hay, size_t start, size_t end) const {
     const size_t n = lit_.size();
     if (n == 0) return start <= end ? start : SIZE_MAX;
     if (end < start || end - start < n) return SIZE_MAX;
+    if (n >= 2 && byte_rank(rare_a_) > kMemchrRank) return find_pair(hay, start, end);
     const uint8_t* p = hay + start + rare_;
     const uint8_t* lim = hay + end - n + rare_ + 1;  // exclusive bound for the rare byte
     while (p < lim) {

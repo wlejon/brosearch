@@ -38,6 +38,9 @@ bool apply_flag(const std::string& f, FuzzyOptions& o) {
     else if (f == "--algo=v1") o.algo_v1 = true;
     else if (f == "--scheme=path") o.scheme = FuzzyScheme::Path;
     else if (f == "--scheme=history") o.scheme = FuzzyScheme::History;
+    else if (f == "--tac") o.tac = true;
+    else if (f.rfind("--nth=", 0) == 0) return parse_fuzzy_nth(f.substr(6), o.nth);
+    else if (f.rfind("--delimiter=", 0) == 0) o.delimiter = f.substr(12);
     else if (f.rfind("--tiebreak=", 0) == 0) {
         std::string s = f.substr(11);
         size_t i = 0;
@@ -82,6 +85,7 @@ size_t replay(const std::vector<std::string>& items, const std::string& fixture_
             if (sp > p) CHECK_MSG(apply_flag(flags.substr(p, sp - p), opts), "flag " << flags);
             p = sp + 1;
         }
+        if (opts.tac) opts.sort = true;  // fzf --filter ignores --no-sort under --tac (core.go)
         // N <count> <hash>
         const std::string& nline = lines[i + 1];
         size_t want_count = std::strtoull(nline.c_str() + 2, nullptr, 10);
@@ -117,11 +121,11 @@ std::vector<std::string> paths_corpus() { return bt::read_lines(bt::fixture_dir(
 TEST(fuzzy, fzf_parity_paths) {
     auto items = paths_corpus();
     CHECK_EQ(items.size(), size_t(1724));
-    CHECK_EQ(replay(items, "paths.expected"), size_t(99));
+    CHECK_EQ(replay(items, "paths.expected"), size_t(114));
 }
 
 TEST(fuzzy, fzf_parity_unicode) {
-    CHECK_EQ(replay(fuzzy_corpus::unicode_corpus(3000, 7), "unicode.expected"), size_t(80));
+    CHECK_EQ(replay(fuzzy_corpus::unicode_corpus(3000, 7), "unicode.expected"), size_t(85));
 }
 
 TEST(fuzzy, fzf_parity_long_lines_v1_fallback) {
@@ -154,6 +158,92 @@ TEST(fuzzy, positions_are_valid_and_cover_the_pattern) {
             }
         }
     }
+}
+
+TEST(fuzzy, unicode16_tables) {
+    // U+1C89 / U+1C8A CYRILLIC CAPITAL / SMALL LETTER TJE are new in Unicode 16.
+    FuzzyOptions ci;
+    ci.case_mode = FuzzyCase::Ignore;
+    CHECK(fuzzy_match("\xE1\xB2\x8A", "x\xE1\xB2\x89y", ci).has_value());  // lowercase mapping
+    // Smart case: an uppercase TJE in the query makes it case-sensitive.
+    CHECK(!fuzzy_match("\xE1\xB2\x89", "\xE1\xB2\x8A").has_value());
+    CHECK(fuzzy_match("\xE1\xB2\x8A", "\xE1\xB2\x89").has_value());
+}
+
+TEST(fuzzy, display_replaces_invalid_utf8) {
+    // Go decodes each invalid byte to U+FFFD: a lone 0xFF, a truncated sequence (two bytes),
+    // an encoded surrogate (three bytes).
+    auto d = fuzzy_display("ab\xFF" "c \xE2\x82x \xED\xA0\x80!");
+    CHECK_EQ(d.text, std::string("ab\xEF\xBF\xBD" "c \xEF\xBF\xBD\xEF\xBF\xBDx \xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD!"));
+    CHECK_EQ(fuzzy_display("plain").text, std::string("plain"));
+    CHECK_EQ(fuzzy_display("caf\xC3\xA9").text, std::string("caf\xC3\xA9"));
+    // Byte positions follow the replacement: 'c' (byte 3) moves to byte 5, 'x' (byte 7) to 13.
+    const std::string item = "ab\xFF" "c \xE2\x82x";
+    auto m = fuzzy_match("bcx", item);
+    CHECK(m.has_value());
+    if (m) {
+        CHECK_EQ(m->positions, (std::vector<uint32_t>{1, 3, 7}));
+        auto shown = fuzzy_display(item, m->positions);
+        CHECK_EQ(shown.positions, (std::vector<uint32_t>{1, 5, 13}));
+        CHECK_EQ(shown.text.substr(13, 1), std::string("x"));
+    }
+}
+
+TEST(fuzzy, nth_parsing) {
+    std::vector<FuzzyField> f;
+    CHECK(parse_fuzzy_nth("1,3..5,-1", f));
+    CHECK(f == (std::vector<FuzzyField>{{1, 1}, {3, 5}, {-1, 0}}));
+    CHECK(parse_fuzzy_nth("2", f) && f == (std::vector<FuzzyField>{{2, 2}}));
+    CHECK(parse_fuzzy_nth("1", f) && f == (std::vector<FuzzyField>{{1, 1}}));
+    CHECK(parse_fuzzy_nth("2..", f) && f == (std::vector<FuzzyField>{{2, 0}}));
+    CHECK(parse_fuzzy_nth("..3", f) && f == (std::vector<FuzzyField>{{0, 3}}));
+    CHECK(parse_fuzzy_nth("1..3", f) && f == (std::vector<FuzzyField>{{0, 3}}));
+    CHECK(parse_fuzzy_nth("1..-2", f) && f == (std::vector<FuzzyField>{{0, -2}}));
+    CHECK(parse_fuzzy_nth("-3..-1", f) && f == (std::vector<FuzzyField>{{-3, 0}}));
+    CHECK(parse_fuzzy_nth("..", f) && f == (std::vector<FuzzyField>{{0, 0}}));
+    CHECK(parse_fuzzy_nth("-1", f) && f == (std::vector<FuzzyField>{{-1, 0}}));
+    const char* bad[] = {"", "0", "a", "1..2..3", "-1..2", "...", "1,,2", "1 2", "0..", "..0"};
+    for (const char* b : bad) CHECK_MSG(!parse_fuzzy_nth(b, f), "accepted " << b);
+}
+
+TEST(fuzzy, nth_fields_and_tac) {
+    FuzzyOptions o;
+    o.nth = {{2, 2}};
+    // AWK fields: "  alpha  beta gamma" -> ["alpha  ", "beta ", "gamma"]; field 2 = "beta ".
+    auto m = fuzzy_match("bt", "  alpha  beta gamma", o);
+    CHECK(m.has_value());
+    if (m) CHECK_EQ(m->positions, (std::vector<uint32_t>{9, 11}));  // whole-item byte offsets
+    CHECK(!fuzzy_match("alp", "  alpha  beta gamma", o).has_value());
+    // Literal delimiter; the last field loses its trailing delimiter, so suffix terms work.
+    o.delimiter = ":";
+    o.nth = {{-1, 0}};
+    CHECK(fuzzy_match("rs$", "a:b:cars", o).has_value());
+    CHECK(!fuzzy_match("rs", "a:b:cars:", o).has_value());  // the last field is "" there
+    o.nth = {{0, 3}};
+    CHECK(fuzzy_match("rs$", "a:b:cars:x", o).has_value());  // "a:b:cars:" -> "a:b:cars"
+    o.nth = {{2, 2}};
+    CHECK(fuzzy_match("b$", "a:b:cars", o).has_value());  // "b:" stripped to "b" (last field)
+    CHECK(!fuzzy_match("a", "a:b:cars", o).has_value());
+    // Regex delimiter.
+    o.delimiter = "[,;]+";
+    o.nth = {{2, 2}};
+    CHECK(fuzzy_match("mid", "first,,mid;last", o).has_value());
+    CHECK(!fuzzy_match("first", "first,,mid;last", o).has_value());
+    // --tac: unsorted results come last-first; score ties go to the later item.
+    FuzzyOptions t;
+    t.tac = true;
+    std::vector<std::string> items = {"ab", "xx", "ab", "abc"};
+    auto res = fuzzy_filter(FuzzyQuery("ab", t), std::span<const std::string>(items));
+    std::vector<uint32_t> idx;
+    for (auto& r : res) idx.push_back(r.index);
+    CHECK_EQ(idx, (std::vector<uint32_t>{2, 0, 3}));
+    t.sort = false;
+    idx.clear();
+    for (auto& r : fuzzy_filter(FuzzyQuery("ab", t), std::span<const std::string>(items))) idx.push_back(r.index);
+    CHECK_EQ(idx, (std::vector<uint32_t>{3, 2, 0}));
+    idx.clear();
+    for (auto& r : fuzzy_filter(FuzzyQuery("", t), std::span<const std::string>(items), 2)) idx.push_back(r.index);
+    CHECK_EQ(idx, (std::vector<uint32_t>{3, 2}));
 }
 
 TEST(fuzzy, fuzzy_positions_match_characters) {

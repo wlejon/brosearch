@@ -44,6 +44,18 @@ enum class FuzzyScheme : uint8_t {
 // `Index` itself is a no-op marker, so {Index} alone means "score, then input order".
 enum class FuzzyTiebreak : uint8_t { Length, Chunk, Pathname, Begin, End, Index };
 
+// One fzf field range (an element of --nth). Fields are 1-based; negative counts from the end;
+// 0 stands for an open end. As fzf normalizes them: "2" = {2, 2}, "2.." = {2, 0}, "..3" =
+// {0, 3} (as is "1..3"), "-2.." = {-2, 0}, "1..-2" = {0, -2}, ".." = {0, 0} (the whole item).
+struct FuzzyField {
+    int begin = 0;
+    int end = 0;
+    bool operator==(const FuzzyField&) const = default;
+};
+
+// Parses an fzf --nth value ("1,3..5,-1"). False (and `out` untouched) on a malformed one.
+bool parse_fuzzy_nth(std::string_view spec, std::vector<FuzzyField>& out);
+
 struct FuzzyOptions {
     FuzzyCase case_mode = FuzzyCase::Smart;
     FuzzyScheme scheme = FuzzyScheme::Default;
@@ -52,6 +64,17 @@ struct FuzzyOptions {
     bool normalize = true;   // fold Latin diacritics (fzf --literal disables)
     bool algo_v1 = false;    // fzf --algo=v1 (greedy, faster, lower quality)
     bool sort = true;        // false = keep input order (fzf --no-sort)
+    // fzf --tac: reverse the input order (unsorted results come last-first and score ties go
+    // to the later item). FuzzyResult::index still counts from the first item.
+    bool tac = false;
+    // fzf --nth: terms match only these fields of an item (the first field, in this order,
+    // where a term matches wins; positions and ranks stay in whole-item coordinates). Empty =
+    // the whole item.
+    std::vector<FuzzyField> nth;
+    // fzf --delimiter, splitting fields for nth: empty = AWK style (runs of non-blanks with
+    // their trailing blanks; leading blanks skipped). One character or text with no regex
+    // metacharacters (or an invalid regex) is literal; otherwise a regex. "\t" means a tab.
+    std::string delimiter;
     // Empty = the scheme's default ([Length]; Path: [Pathname, Length]; History: []).
     std::vector<FuzzyTiebreak> tiebreak;
     // fzf's path scheme treats '\\' as a delimiter on Windows (os.PathSeparator). Follows the
@@ -82,13 +105,13 @@ struct FuzzyResult {
     std::vector<uint32_t> positions;  // as in FuzzyMatch
 };
 
-// fzf's result order: rank, then index.
-[[nodiscard]] inline bool fuzzy_result_less(const FuzzyResult& a, const FuzzyResult& b) noexcept {
+// fzf's result order: rank, then index (the later item first with tac).
+[[nodiscard]] inline bool fuzzy_result_less(const FuzzyResult& a, const FuzzyResult& b, bool tac = false) noexcept {
     for (int i = 3; i >= 0; --i) {
         if (a.rank[static_cast<size_t>(i)] != b.rank[static_cast<size_t>(i)])
             return a.rank[static_cast<size_t>(i)] < b.rank[static_cast<size_t>(i)];
     }
-    return a.index < b.index;
+    return tac ? a.index > b.index : a.index < b.index;
 }
 
 namespace fuzzy_detail {
@@ -135,6 +158,14 @@ private:
                                                     std::span<const std::string> items,
                                                     size_t limit = 0, bool with_positions = false,
                                                     const CancellationToken* token = nullptr);
+
+// An item as fzf shows it: every byte that is not part of valid UTF-8 (as Go decodes it)
+// becomes U+FFFD. Byte positions into the item are mapped onto the shown text.
+struct FuzzyDisplay {
+    std::string text;
+    std::vector<uint32_t> positions;
+};
+[[nodiscard]] FuzzyDisplay fuzzy_display(std::string_view item, std::span<const uint32_t> byte_positions = {});
 
 // Converts byte-offset positions to character (code point) indices, e.g. for terminal cells.
 [[nodiscard]] std::vector<uint32_t> fuzzy_char_indices(std::string_view item,

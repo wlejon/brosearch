@@ -1,0 +1,8 @@
+./binary_big.dat-14207-row 14207
+./binary_big.dat-14208-row 14208
+./binary_big.dat-14209-row 14209
+./binary_big.dat:14210:row 14210
+./binary_big.dat:14211:row 14211
+./binary_big.dat:14212:row 14212
+./binary_big.dat:14213:row 14213
+./binary_big.dat: WARNING: stopped searching binary file after match (found "\0" byte around offset 188895)

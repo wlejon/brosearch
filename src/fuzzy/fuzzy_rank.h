@@ -36,7 +36,11 @@ void parallel_for(size_t tasks, size_t threads, const std::function<void(size_t)
 
 // Orders hits (given in ascending index order) the way fzf does — rank key, then index — when
 // sortable, else keeps input order; keeps the best `limit` if > 0. Converts to FuzzyResult.
-std::vector<FuzzyResult> finish_results(std::vector<Hit>& hits, bool sortable, size_t limit);
+// tac (fzf --tac) reverses the input order: descending index, in both cases.
+std::vector<FuzzyResult> finish_results(std::vector<Hit>& hits, bool sortable, size_t limit, bool tac);
+
+// The results of a query with no terms: every item, in input order (reversed with tac).
+std::vector<FuzzyResult> all_items(size_t count, size_t limit, bool tac);
 
 // Recomputes matches with positions for the (already ranked) results.
 void fill_positions(const QueryImpl& q, std::vector<FuzzyResult>& results,

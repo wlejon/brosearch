@@ -313,6 +313,7 @@ void QueryImpl::build(std::string_view query, const FuzzyOptions& opts) {
         term_sets.push_back({std::move(t)});
     }
     if (!opts.sort) sortable = false;
+    fields = FieldSpec(opts);
 }
 
 bool QueryImpl::match_prepared(const PreparedItem& item, int32_t* score_out, FuzzyRank* rank_out, bool with_pos,
@@ -328,6 +329,32 @@ bool QueryImpl::match_prepared(const PreparedItem& item, int32_t* score_out, Fuz
     int32_t min_begin = 65535, min_end = 65535, max_end = 0;
     bool valid = false;
     if (with_pos) sc.all_pos.clear();
+    // fzf's iter: a term is tried on each --nth field in turn; the first match wins, shifted
+    // into whole-item coordinates.
+    const bool by_field = fields.active();
+    if (by_field) fields.fields(item.text, item.chars, item.byte_offsets, sc.fields);
+    auto run = [&](AlgoFn fn, const Term& t) {
+        const int32_t m = static_cast<int32_t>(t.text.size());
+        if (!by_field)
+            return fn(scheme, t.case_sensitive, t.normalize, forward, item.chars, t.text.data(), m,
+                      need_pos ? &sc.pos : nullptr, sc.slab);
+        for (const FieldSlice& f : sc.fields) {
+            Chars part;
+            part.n = f.n;
+            if (item.chars.bytes) part.bytes = item.chars.bytes + f.begin;
+            else if (item.chars.runes) part.runes = item.chars.runes + f.begin;
+            sc.pos.clear();
+            AlgoResult r = fn(scheme, t.case_sensitive, t.normalize, forward, part, t.text.data(), m,
+                              need_pos ? &sc.pos : nullptr, sc.slab);
+            if (r.start < 0) continue;
+            r.start += f.begin;
+            r.end += f.begin;
+            if (r.start_nopos >= 0) r.start_nopos += f.begin;
+            for (int32_t& p : sc.pos) p += f.begin;
+            return r;
+        }
+        return AlgoResult{};
+    };
 
     for (const auto& set : term_sets) {
         bool matched = false;
@@ -335,8 +362,7 @@ bool QueryImpl::match_prepared(const PreparedItem& item, int32_t* score_out, Fuz
         for (const Term& t : set) {
             AlgoFn fn = extended ? proc_fun(*this, t.type) : (fuzzy ? fuzzy_algo : exact_match_naive);
             sc.pos.clear();
-            AlgoResult r = fn(scheme, t.case_sensitive, t.normalize, forward, item.chars, t.text.data(),
-                              static_cast<int32_t>(t.text.size()), need_pos ? &sc.pos : nullptr, sc.slab);
+            AlgoResult r = run(fn, t);
             if (r.start >= 0) {
                 if (t.inverse) continue;
                 ob = (fzf_with_pos || r.start_nopos < 0) ? r.start : r.start_nopos;
@@ -398,6 +424,7 @@ bool QueryImpl::match_item(std::string_view item, FuzzyMatch* out, bool with_pos
 PreparedItem prepare_item(std::string_view item, std::vector<uint32_t>& runes, std::vector<uint32_t>& offsets) {
     PreparedItem p;
     p.byte_len = static_cast<uint32_t>(item.size());
+    p.text = item;
     if (is_ascii(item)) {
         p.chars.bytes = reinterpret_cast<const unsigned char*>(item.data());
         p.chars.n = static_cast<int32_t>(item.size());
@@ -445,6 +472,28 @@ std::optional<FuzzyMatch> fuzzy_match(std::string_view query, std::string_view i
     FuzzyMatch m;
     if (!q.match(item, &m, true)) return std::nullopt;
     return m;
+}
+
+FuzzyDisplay fuzzy_display(std::string_view item, std::span<const uint32_t> byte_positions) {
+    FuzzyDisplay d;
+    if (is_ascii(item)) {
+        d.text.assign(item);
+        d.positions.assign(byte_positions.begin(), byte_positions.end());
+        return d;
+    }
+    std::vector<uint32_t> runes, offsets;
+    decode_runes(item, runes, &offsets);
+    std::vector<uint32_t> shown(runes.size());  // rune index -> byte offset in d.text
+    d.text.reserve(item.size() + 8);
+    for (size_t i = 0; i < runes.size(); ++i) {
+        shown[i] = static_cast<uint32_t>(d.text.size());
+        append_utf8(d.text, runes[i]);
+    }
+    for (uint32_t b : byte_positions) {
+        size_t r = static_cast<size_t>(std::lower_bound(offsets.begin(), offsets.end(), b) - offsets.begin());
+        d.positions.push_back(r < shown.size() ? shown[r] : static_cast<uint32_t>(d.text.size()));
+    }
+    return d;
 }
 
 std::vector<uint32_t> fuzzy_char_indices(std::string_view item, std::span<const uint32_t> byte_positions) {

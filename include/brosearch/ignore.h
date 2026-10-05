@@ -12,15 +12,39 @@
 //  - Case folding (CaseMode) is ASCII-only, exactly like git's core.ignorecase.
 //  - A path below an ignored directory is ignored no matter what (git cannot re-include it);
 //    IgnoreFilter::is_ignored applies this by checking every ancestor directory.
+//
+// IgnoreDialect::Rg instead reads lines the way ripgrep's ignore crate does:
+//  - all trailing whitespace (tabs and Unicode spaces too) is trimmed unless the line ends in
+//    "\ "; a file stops at its first line that is not valid UTF-8;
+//  - a line globset rejects (unclosed '{', reversed range, trailing '\') is skipped;
+//  - a lone "!" whitelists everything;
+//  - patterns are globset globs: no POSIX classes, classes match '/', "{a,b}" alternation, an
+//    unclosed '[' is literal (see rg_glob_match).
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace bro::search {
+
+namespace detail {
+class RgGlob;
+}
+
+// Whose reading of ignore files and globs to follow: git's (dir.c + wildmatch) or ripgrep's (the
+// ignore and globset crates). The walker also anchors global excludes, extra ignore files and -g
+// globs differently under Rg (see WalkOptions::dialect).
+enum class IgnoreDialect : uint8_t { Git, Rg };
+
+// One glob in ripgrep's dialect, matched against a whole '/'-separated path (no implicit "**/").
+// False for a glob ripgrep rejects.
+[[nodiscard]] bool rg_glob_match(std::string_view glob, std::string_view text, bool case_insensitive = false);
+// Whether ripgrep accepts the glob; `error` (when given) says why not.
+[[nodiscard]] bool rg_glob_valid(std::string_view glob, std::string* error = nullptr);
 
 // How ignore patterns compare letters. Auto = the repository's core.ignorecase when inside a git
 // repo, else the platform default (insensitive on Windows; on macOS whatever the volume reports,
@@ -58,13 +82,18 @@ struct IgnoreRule {
     bool dir_only = false;     // "pat/"
     bool basename_only = false;// no '/' in pattern: match the last path component at any depth
     Kind kind = Kind::Glob;    // Literal / Suffix ("*.ext") are fast paths for basename rules
+    // IgnoreDialect::Rg: the compiled glob, matched against the whole path. `pattern` then holds
+    // the glob as the ignore crate rewrites it ("**/" prefix for basename rules, "/**" -> "/**/*").
+    std::shared_ptr<const detail::RgGlob> rg;
 };
 
 // One ordered list of rules sharing a base directory (one ignore file, or lines added
 // programmatically). Paths given to match() are relative to that base, '/'-separated.
 class Gitignore {
 public:
-    Gitignore() = default;
+    explicit Gitignore(IgnoreDialect dialect = IgnoreDialect::Git) : dialect_(dialect) {}
+
+    [[nodiscard]] IgnoreDialect dialect() const noexcept { return dialect_; }
 
     // Parses one line (without its '\n'; a trailing '\r' is removed).
     void add_line(std::string_view line);
@@ -82,8 +111,11 @@ public:
     [[nodiscard]] size_t whitelist_count() const noexcept { return whitelists_; }
 
 private:
+    void add_line_rg(std::string_view line);
+
     std::vector<IgnoreRule> rules_;
     size_t whitelists_ = 0;
+    IgnoreDialect dialect_ = IgnoreDialect::Git;
 };
 
 // A set of rule groups at different base directories, answering git check-ignore style

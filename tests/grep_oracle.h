@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -67,6 +69,15 @@ inline void materialize_corpus(const std::filesystem::path& dir) {
         s += "hello tail\n";
         put(dir / "binary_late.dat", s);
     }
+    {
+        // NUL past rg's first 64 KiB read, so rg's block boundaries (and their shift when it
+        // keeps context lines across a roll) decide what is searched before it.
+        std::string s;
+        for (int i = 1; i <= 20000; ++i) s += "row " + std::to_string(i) + "\n";
+        s += std::string("x\0y\nneedle row\nlast row\n", 24);
+        put(dir / "binary_big.dat", s);
+    }
+    put(dir / "binary_mixed.dat", std::string("hello one\nhello two\0hello three\nfoo\nhello four\n", 47));
     put(dir / "tiny_bin1.dat", std::string("hi\nhello\0rest hello\n", 21));
     put(dir / "tiny_bin2.dat", std::string("hello there\nmore hello\0\nhello\n", 30));
     put(dir / "latin1.txt", "caf\xE9 hello\n\xFF\xFE broken hello\nok line\n\xC3\x28 bad seq hello\n");
@@ -94,6 +105,21 @@ inline void materialize_corpus(const std::filesystem::path& dir) {
     put(dir / "sub" / "ignored_by_dotignore.txt", "hello ignored\n");
     put(dir / "sub" / ".ignore", "ignored_by_dotignore.txt\n");
     put(dir / ".hidden.txt", "hello hidden\n");
+    // Script properties: U+0342 (Inherited, scx Greek), U+00B7 (Common, scx many), U+30FC
+    // (Common, scx Hira Kana), U+0951 (Inherited, scx Deva ...), U+0378 (unassigned: Unknown).
+    put(dir / "scripts.txt",
+        "greek \xCE\xB1\xCE\xB2\xCE\xB3 \xCE\xB4\n"
+        "perispomeni \xCD\x82 alone\n"
+        "middle \xC2\xB7 dot\n"
+        "han \xE4\xB8\xAD\xE6\x96\x87\xE5\xAD\x97\n"
+        "kana \xE3\x81\xB2\xE3\x82\x89 \xE3\x82\xAB\xE3\x82\xBF \xE3\x83\xBC\n"
+        "cyrillic \xD0\x96\xD1\x83\xD0\xBA\n"
+        "unknown \xCD\xB8 here\n"
+        "deva \xE0\xA4\x95\xE0\xA5\x91\n");
+    // Multiline (-U) blocks, adjacency and per-block columns.
+    put(dir / "multi.txt",
+        "alpha one\nbeta two\ngamma three\nalpha four beta\ndelta five\nepsilon alpha\nbeta six\n"
+        "zeta seven\nalpha\nbeta\nend\n");
     (void)fs::path();
 }
 
@@ -131,7 +157,7 @@ inline bool parse_cli(const std::vector<std::string>& raw, Cli& c, std::string& 
         out = args[++i];
         return true;
     };
-    bool pattern_given = false, dashdash = false;
+    bool pattern_given = false, dashdash = false, filename_set = false;
     for (; i < args.size(); ++i) {
         const std::string& a = args[i];
         std::string v;
@@ -155,6 +181,8 @@ inline bool parse_cli(const std::vector<std::string>& raw, Cli& c, std::string& 
         else if (a == "-a" || a == "--text") c.g.binary = bro::search::BinaryMode::Text;
         else if (a == "--binary") c.explicit_binary = true;
         else if (a == "--crlf") c.g.crlf = true;
+        else if (a == "-U" || a == "--multiline") c.g.multiline = true;
+        else if (a == "--multiline-dotall") c.g.multiline_dotall = true;
         else if (a == "-n" || a == "--line-number") c.line_number = true;
         else if (a == "-N" || a == "--no-line-number") c.line_number = false;
         else if (a == "--column") { c.column = true; c.line_number = true; }
@@ -163,9 +191,11 @@ inline bool parse_cli(const std::vector<std::string>& raw, Cli& c, std::string& 
         else if (a == "--count-matches") c.count_matches = true;
         else if (a == "-l" || a == "--files-with-matches") c.files_with_matches = true;
         else if (a == "--vimgrep") { c.vimgrep = true; c.line_number = c.column = true; }
-        else if (a == "-H" || a == "--with-filename") c.with_filename = true;
-        else if (a == "-I" || a == "--no-filename") c.with_filename = false;
-        else if (a == "--no-heading" || a == "--sort-files") {}
+        else if (a == "-H" || a == "--with-filename") { c.with_filename = true; filename_set = true; }
+        else if (a == "-I" || a == "--no-filename") { c.with_filename = false; filename_set = true; }
+        // --no-mmap: this front end always models rg's buffered reader (rg memory-maps a few
+        // explicitly named files on Windows and Linux, and its binary detection differs there).
+        else if (a == "--no-heading" || a == "--sort-files" || a == "--no-mmap") {}
         else if (a == "--sort") { if (!value(v)) return false; }
         else if (a == "--hidden" || a == "-.") c.w.hidden = true;
         else if (a == "--no-ignore") { c.w.git_ignore = c.w.ignore_files = c.w.git_exclude = c.w.git_global = false; c.w.parents = false; }
@@ -205,6 +235,13 @@ inline bool parse_cli(const std::vector<std::string>& raw, Cli& c, std::string& 
         c.g.fixed_strings = false;
     }
     if (c.paths.empty()) c.paths.push_back(".");
+    if (!filename_set) {
+        // rg shows file names unless it was given exactly one path and that path is a file.
+        std::error_code ec;
+        const std::string& p = c.paths[0];
+        c.with_filename = c.paths.size() > 1 ||
+                          !std::filesystem::is_regular_file(std::filesystem::path(std::u8string(p.begin(), p.end())), ec);
+    }
     // rg matches ignore patterns case-sensitively everywhere (the library default, Auto, follows
     // git's core.ignorecase instead).
     c.w.ignore_case = bro::search::CaseMode::Sensitive;
@@ -214,6 +251,10 @@ inline bool parse_cli(const std::vector<std::string>& raw, Cli& c, std::string& 
         c.g.line_numbers = false;
         c.g.collect_spans = c.count_matches;
         if (c.files_with_matches) c.g.max_count = 1;
+    } else if (!c.only && !c.vimgrep) {
+        // A plain line needs at most its first match (for --column), as rg's printer does.
+        if (c.column) c.g.max_spans_per_line = 1;
+        else c.g.collect_spans = false;
     }
     return true;
 }
@@ -230,90 +271,132 @@ inline bool path_less(const std::string& a, const std::string& b) {
     return a.size() < b.size();
 }
 
-// Formats one file's result exactly like rg --no-heading (paths with '/').
-inline void format_file(const Cli& c, const bro::search::GrepFileResult& r, const std::string& display,
-                        bool& printed_any, std::string& out) {
-    using bro::search::LineKind;
-    if (r.matched_lines == 0 && !r.binary_matched) return;
-    auto num = [&](uint64_t v, char sep) {
+// Formats one file exactly like rg --no-heading (paths with '/'), streaming: lines are formatted
+// as the searching worker reports them, the per-file summary when it finishes. Output is
+// formatted as though something had been printed before this file (see run_rg_like).
+class Formatter final : public bro::search::GrepFileVisitor {
+public:
+    using Done = std::function<void(Formatter&, const bro::search::GrepFileResult&)>;
+    Formatter(const Cli& c, std::string_view display, const Done& done) : display_(display), c_(c), done_(done) {}
+
+    std::string display_;
+    std::string out;
+
+    bool line(const bro::search::GrepLineView& l) override {
+        using bro::search::LineKind;
+        const bool context = c_.g.after_context || c_.g.before_context;
+        if (context && (first_ || l.line_number != prev_line_ + 1)) out += "--\n";
+        first_ = false;
+        prev_line_ = l.line_number;
+        prev_end_ = l.byte_offset + l.text.size() + 1;
+        if (l.kind == LineKind::Context) {
+            row('-', l.line_number, 0, l.text);
+            return true;
+        }
+        if (!l.region_continued) block_start_ = l.byte_offset;
+        if (c_.only && !c_.g.invert) {
+            // rg's -o column counts from the start of the block of lines (one line unless
+            // multiline), and a match's later pieces repeat its start column.
+            for (const auto& s : l.spans) {
+                const uint64_t abs = s.continued ? match_start_ : l.byte_offset + s.start;
+                if (!s.continued) match_start_ = abs;
+                row(':', l.line_number, static_cast<size_t>(abs - block_start_ + 1),
+                    l.text.substr(s.start, s.end - s.start));
+            }
+            return true;
+        }
+        if (c_.vimgrep && !c_.g.invert) {
+            // One row per match, on the line where it starts.
+            for (const auto& s : l.spans)
+                if (!s.continued) row(':', l.line_number, s.start + 1, l.text);
+            return true;
+        }
+        // Every line of a multiline region shows the column of the region's first match.
+        size_t col = l.spans.empty() ? 1 : l.spans[0].start + 1;
+        if (l.region_continued) col = region_col_;
+        else region_col_ = col;
+        row(':', l.line_number, col, l.text);
+        return true;
+    }
+
+    bool finish(const bro::search::GrepFileResult& r) override {
+        summary(r);
+        done_(*this, r);
+        return true;
+    }
+
+private:
+    const Cli& c_;
+    const Done& done_;
+    uint64_t prev_line_ = 0;
+    uint64_t prev_end_ = 0;
+    bool first_ = true;
+    size_t region_col_ = 1;
+    uint64_t block_start_ = 0;  // byte offset of the current block's first line
+    uint64_t match_start_ = 0;  // byte offset of the last match that started
+
+    void num(uint64_t v, char sep) {
         char buf[24];
         auto res = std::to_chars(buf, buf + sizeof buf, v);
         out.append(buf, res.ptr);
         out.push_back(sep);
-    };
+    }
     // Appends "path:line:col:" (each part only when enabled), then `text` and a newline.
-    auto row = [&](char sep, uint64_t line, size_t col, std::string_view text) {
-        if (c.with_filename) {
-            out += display;
+    void row(char sep, uint64_t line, size_t col, std::string_view text) {
+        if (c_.with_filename) {
+            out += display_;
             out.push_back(sep);
         }
-        if (c.line_number) num(line, sep);
-        if (c.column && col) num(col, sep);
+        if (c_.line_number) num(line, sep);
+        if (c_.column && col) num(col, sep);
         out += text;
         out.push_back('\n');
-    };
-    const std::string nul_note = "(found \"\\0\" byte around offset " + std::to_string(r.binary_offset) + ")";
-    // rg's counting printers (-c, --count-matches) ignore files where quit-mode binary detection
-    // fired, even when lines before the NUL matched. (-l stops at the first match, before the
-    // NUL's block is read, so it lists them.)
-    const bool counting = c.count || c.count_matches;
-    if (counting && r.binary && c.g.binary == bro::search::BinaryMode::Quit) return;
-    if (r.matched_lines == 0 && !c.files_with_matches && !c.count && !c.count_matches) {
-        out += display + ": binary file matches " + nul_note + "\n";
-        printed_any = true;
-        return;
     }
-    if (c.files_with_matches) {
-        out += display + "\n";
-        printed_any = true;
-        return;
-    }
-    if (c.count || c.count_matches) {
-        size_t n = c.count_matches ? (c.g.invert ? r.matched_lines : r.matches) : r.matched_lines;
-        out += (c.with_filename ? display + ":" : std::string()) + std::to_string(n) + "\n";
-        printed_any = true;
-        return;
-    }
-    const bool context = c.g.after_context || c.g.before_context;
-    uint64_t prev_line = 0;
-    bool first_in_file = true;
-    for (const auto& l : r.lines) {
-        if (context && printed_any && (first_in_file || l.line_number != prev_line + 1)) out += "--\n";
-        first_in_file = false;
-        prev_line = l.line_number;
-        printed_any = true;
-        if (l.kind == LineKind::Context) {
-            row('-', l.line_number, 0, l.text);
-            continue;
+
+    void summary(const bro::search::GrepFileResult& r) {
+        if (!r.error.empty() || (r.matched_lines == 0 && !r.binary_matched)) return;
+        const std::string nul_note = "(found \"\\0\" byte around offset " + std::to_string(r.binary_offset) + ")";
+        const std::string who = c_.with_filename ? display_ + ": " : std::string();
+        // rg's counting printers (-c, --count-matches) ignore files where quit-mode binary
+        // detection fired, even when lines before the NUL matched. (-l stops at the first match,
+        // before the NUL's block is read, so it lists them.)
+        const bool counting = c_.count || c_.count_matches;
+        if (counting && r.binary && c_.g.binary == bro::search::BinaryMode::Quit) return;
+        if (r.matched_lines == 0 && !c_.files_with_matches && !counting) {
+            out += who + "binary file matches " + nul_note + "\n";
+            return;
         }
-        if (c.only && !c.g.invert) {
-            std::string_view t(l.text);
-            for (const auto& s : l.spans) row(':', l.line_number, s.start + 1, t.substr(s.start, s.end - s.start));
-            continue;
+        if (c_.files_with_matches) {
+            out += display_ + "\n";
+            return;
         }
-        if (c.vimgrep && !c.g.invert) {
-            for (const auto& s : l.spans) row(':', l.line_number, s.start + 1, l.text);
-            continue;
+        if (counting) {
+            size_t n = c_.count_matches ? (c_.g.invert ? r.matched_lines : r.matches) : r.matched_lines;
+            out += (c_.with_filename ? display_ + ":" : std::string()) + std::to_string(n) + "\n";
+            return;
         }
-        size_t col = l.spans.empty() ? 1 : l.spans[0].start + 1;
-        row(':', l.line_number, col, l.text);
+        if (r.binary_matched) {
+            // rg breaks the context before the line it stopped at, if it is not adjacent.
+            const bool context = c_.g.after_context || c_.g.before_context;
+            if (context && !first_ && r.binary_stop_offset != UINT64_MAX && r.binary_stop_offset != prev_end_)
+                out += "--\n";
+            out += who + "binary file matches " + nul_note + "\n";
+        } else if (r.binary && c_.g.binary == bro::search::BinaryMode::Quit) {
+            out += who + "WARNING: stopped searching binary file after match " + nul_note + "\n";
+        }
     }
-    if (r.binary_matched) {
-        out += display + ": binary file matches " + nul_note + "\n";
-    } else if (r.binary && c.g.binary == bro::search::BinaryMode::Quit) {
-        out += display + ": WARNING: stopped searching binary file after match " + nul_note + "\n";
-    }
-}
+};
 
 // Runs a search the way `rg ARGS` would (from the current directory) and returns its stdout.
 // Files are processed in sorted path order (rg --sort path). Returns rg's exit code: 0 = matches,
 // 1 = none, 2 = error.
-inline int run_rg_like(const std::vector<std::string>& args, std::string& out, std::string& err,
+// Output goes to `write` in order, one chunk per file (no final concatenation).
+using Writer = std::function<void(std::string_view)>;
+inline int run_rg_like(const std::vector<std::string>& args, const Writer& write, std::string& err,
                        bro::search::GrepStats* stats_out = nullptr) {
     namespace bs = bro::search;
     Cli c;
     if (!parse_cli(args, c, err)) return 2;
-    if (!c.line_number && !c.column) {}
     std::string perr;
     auto grep = bs::Grep::compile(c.patterns[0], c.g, &perr);
     if (!grep) {
@@ -323,23 +406,23 @@ inline int run_rg_like(const std::vector<std::string>& args, std::string& out, s
     // Each file is formatted where it was searched (in the worker), as though something had been
     // printed before it; the leading context separator of whichever chunk prints first is dropped.
     struct Item {
+        size_t root;  // rg keeps the order of the paths it was given; --sort path sorts within each
         std::string display;
         std::string text;
     };
     std::vector<Item> items;
     std::mutex mu;
     std::atomic<bool> matched{false};
-    auto add = [&](std::string display, const bs::GrepFileResult& r) {
-        if (r.matched_lines || r.binary_matched) matched = true;
-        bool printed = true;
-        std::string text;
-        format_file(c, r, display, printed, text);
-        if (text.empty()) return;
+    size_t root_index = 0;
+    const Formatter::Done done = [&](Formatter& f, const bs::GrepFileResult& r) {
+        if (r.error.empty() && (r.matched_lines || r.binary_matched)) matched = true;
+        if (f.out.empty()) return;
         std::lock_guard<std::mutex> lock(mu);
-        items.push_back({std::move(display), std::move(text)});
+        items.push_back({root_index, std::move(f.display_), std::move(f.out)});
     };
     bs::GrepStats total;
-    for (const auto& root : c.paths) {
+    for (; root_index < c.paths.size(); ++root_index) {
+        const std::string& root = c.paths[root_index];
         std::filesystem::path rp = std::filesystem::path(std::u8string(root.begin(), root.end()));
         std::error_code ec;
         if (std::filesystem::is_regular_file(rp, ec)) {
@@ -347,20 +430,24 @@ inline int run_rg_like(const std::vector<std::string>& args, std::string& out, s
             bs::GrepOptions go = c.g;
             if (go.binary == bs::BinaryMode::Quit) go.binary = bs::BinaryMode::Report;
             auto g2 = bs::Grep::compile(c.patterns[0], go, &perr);
-            add(root, g2->search_file(rp));
+            Cli ce = c;
+            ce.g = go;
+            Formatter f(ce, root, done);
+            g2->search_file(rp, root, f);
             continue;
         }
         bs::GrepStats st;
         auto gg = grep;
+        Cli cb = c;
         if (c.explicit_binary) {
-            bs::GrepOptions go = c.g;
-            go.binary = bs::BinaryMode::Report;
-            gg = bs::Grep::compile(c.patterns[0], go, &perr);
+            cb.g.binary = bs::BinaryMode::Report;
+            gg = bs::Grep::compile(c.patterns[0], cb.g, &perr);
         }
-        gg->search_tree(rp, c.w, [&](const bs::GrepFileResult& r) {
-            if (!r.error.empty()) return true;
-            add(root == "." ? "./" + r.path : root + "/" + r.path, r);
-            return true;
+        const std::string prefix = root == "." ? "./" : root + "/";
+        gg->search_tree(rp, c.w, [&](std::string_view path) {
+            std::string display = prefix;
+            display += path;
+            return std::make_unique<Formatter>(cb, display, done);
         }, nullptr, &st);
         total.files_searched += st.files_searched;
         total.files_matched += st.files_matched;
@@ -369,14 +456,23 @@ inline int run_rg_like(const std::vector<std::string>& args, std::string& out, s
         total.bytes_searched += st.bytes_searched;
         total.elapsed_ms += st.elapsed_ms;
     }
-    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return path_less(a.display, b.display); });
+    std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+        return a.root != b.root ? a.root < b.root : path_less(a.display, b.display);
+    });
+    bool first = true;
     for (auto& it : items) {
         std::string_view t(it.text);
-        if (out.empty() && (c.g.after_context || c.g.before_context) && t.substr(0, 3) == "--\n") t.remove_prefix(3);
-        out += t;
+        if (first && (c.g.after_context || c.g.before_context) && t.substr(0, 3) == "--\n") t.remove_prefix(3);
+        first = false;
+        write(t);
     }
     if (stats_out) *stats_out = total;
     return matched.load() ? 0 : 1;
+}
+
+inline int run_rg_like(const std::vector<std::string>& args, std::string& out, std::string& err,
+                       bro::search::GrepStats* stats_out = nullptr) {
+    return run_rg_like(args, [&](std::string_view t) { out += t; }, err, stats_out);
 }
 
 } // namespace grep_oracle

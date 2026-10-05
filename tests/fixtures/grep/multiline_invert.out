@@ -1,0 +1,5 @@
+./multi.txt:3:gamma three
+./multi.txt:4:alpha four beta
+./multi.txt:5:delta five
+./multi.txt:8:zeta seven
+./multi.txt:11:end

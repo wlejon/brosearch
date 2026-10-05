@@ -34,6 +34,7 @@ struct StoredItem {
     PreparedItem prepared() const {
         PreparedItem p;
         p.byte_len = static_cast<uint32_t>(text.size());
+        p.text = text;
         if (ascii) {
             p.chars.bytes = reinterpret_cast<const unsigned char*>(text.c_str());
             p.chars.n = static_cast<int32_t>(text.size());
@@ -201,9 +202,7 @@ FuzzySearchResult FuzzyIndex::search(std::string_view query_text, size_t limit, 
     for (auto& s : snap) out.item_count += s.second;
 
     if (q.empty) {
-        size_t n = limit ? std::min(limit, out.item_count) : out.item_count;
-        out.results.resize(n);
-        for (size_t i = 0; i < n; ++i) out.results[i].index = static_cast<uint32_t>(i);
+        out.results = all_items(out.item_count, limit, q.options.tac);
         out.match_count = out.item_count;
         out.candidates_scanned = 0;
         return out;
@@ -262,7 +261,7 @@ FuzzySearchResult FuzzyIndex::search(std::string_view query_text, size_t limit, 
     std::vector<Hit> hits;
     hits.reserve(total);
     for (auto& v : per_chunk) hits.insert(hits.end(), v.begin(), v.end());
-    out.results = finish_results(hits, q.sortable, limit);
+    out.results = finish_results(hits, q.sortable, limit, q.options.tac);
     if (with_positions) {
         fill_positions(q, out.results, [&](uint32_t idx) {
             const Chunk* c = snap[idx / kChunkSize].first;

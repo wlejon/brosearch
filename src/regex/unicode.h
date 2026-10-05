@@ -33,8 +33,13 @@ inline bool is_word_byte(uint8_t b) {
 }
 
 // \p{name}: general categories by short or long name (L, Letter, Lu, Uppercase_Letter, ...),
-// plus Any, ASCII and Assigned. Names compare loosely (case, spaces, '_' and '-' ignored).
+// plus Any, ASCII and Assigned, then scripts (Greek, Grek: the Script property, as regex-syntax
+// resolves a bare name). Names compare loosely (case, spaces, '_' and '-' ignored).
 bool unicode_property(std::string_view name, CharSet* out);
+// General categories (and Any / ASCII / Assigned) only: \p{gc=...}.
+bool unicode_general_category(std::string_view name, CharSet* out);
+// \p{sc=...} (extensions false) or \p{scx=...} (Script_Extensions), by long or short name.
+bool unicode_script(std::string_view name, bool extensions, CharSet* out);
 
 // POSIX [:name:] classes (ASCII only, as in regex-syntax).
 bool posix_class(std::string_view name, CharSet* out);

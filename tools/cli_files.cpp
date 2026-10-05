@@ -1,5 +1,6 @@
 // `brosearch-cli files`: behaves like `rg --files [PATH...]`, printing one path per line with
-// '/' separators (rg on Windows prints '\'; the differential script normalizes).
+// '/' separators (rg on Windows prints '\'; the differential script normalizes). Unreadable
+// directories are reported on stderr in rg's words and make the exit status 2, as in rg.
 //
 //   rg flags: --hidden/-. --no-ignore --no-ignore-vcs --no-ignore-dot --no-ignore-parent
 //             --no-ignore-exclude --no-ignore-global --no-require-git -L/--follow
@@ -8,6 +9,7 @@
 //   extras:   --sort            sort output bytewise (deterministic)
 //             --case=auto|sensitive|insensitive   ignore-pattern case mode (default auto)
 //             --precompose=auto|on|off            NFD -> NFC names on macOS (default auto)
+//             --dialect=git|rg  whose reading of ignore files / globs (default git; rg = ripgrep's)
 //             --global-file F   global excludes file instead of core.excludesFile
 //             --dirs            also print directories
 //             --count           print only the number of files
@@ -70,7 +72,25 @@ bool load_spec(const char* file, tree_spec::Spec& spec) {
     return true;
 }
 
-std::vector<std::string> run_spec(const tree_spec::Spec& spec, const fs::path& dir, bool& ok) {
+// A walk error as rg prints it: the path as walked from `root_arg` (the PATH argument; "" = none,
+// shown as "./") and Rust's io::Error text, "<message> (os error N)".
+void print_walk_error(const std::string& root_arg, const WalkError& err) {
+    std::string shown = root_arg.empty() ? "." : root_arg;
+    if (!err.rel_path.empty()) {
+        if (root_arg.empty()) shown = "./";
+        else if (shown.back() != '/' && shown.back() != '\\') shown.push_back('/');
+        shown.append(err.rel_path);
+    }
+    std::string msg = err.error.message();
+    while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r' || msg.back() == ' ')) msg.pop_back();
+    if (err.op == WalkError::Op::Stat)
+        std::fprintf(stderr, "brosearch-cli: %s: IO error for operation on %s: %s (os error %d)\n", shown.c_str(),
+                     shown.c_str(), msg.c_str(), err.error.value());
+    else
+        std::fprintf(stderr, "brosearch-cli: %s: %s (os error %d)\n", shown.c_str(), msg.c_str(), err.error.value());
+}
+
+std::vector<std::string> run_spec(const tree_spec::Spec& spec, const fs::path& dir, bool& ok, size_t& errors) {
     WalkOptions o;
     std::string err;
     ok = tree_spec::walk_options(spec, dir, o, err);
@@ -78,6 +98,12 @@ std::vector<std::string> run_spec(const tree_spec::Spec& spec, const fs::path& d
         std::fprintf(stderr, "%s\n", err.c_str());
         return {};
     }
+    std::mutex mu;
+    o.on_error = [&](const WalkError& e) {
+        std::lock_guard<std::mutex> lk(mu);
+        ++errors;
+        print_walk_error("", e);  // rg runs from the walk root with no PATH argument
+    };
     return list_files(tree_spec::walk_root(spec, dir), o);
 }
 
@@ -99,7 +125,7 @@ int spec_mode(int argc, char** argv) {
             if (w.rfind("glob=", 0) == 0) std::printf("-g\n%s\n", w.c_str() + 5);
             else if (w.rfind("max-depth=", 0) == 0) std::printf("--max-depth\n%s\n", w.c_str() + 10);
             else if (w.rfind("threads=", 0) == 0 || w.rfind("case=", 0) == 0 || w.rfind("precompose=", 0) == 0 ||
-                     w == "parents")
+                     w.rfind("dialect=", 0) == 0 || w == "parents")
                 continue;
             else std::printf("--%s\n", w.c_str());
         }
@@ -155,11 +181,12 @@ int spec_mode(int argc, char** argv) {
         return 0;
     }
     bool ok;
-    auto files = run_spec(spec, dir, ok);
+    size_t errors = 0;
+    auto files = run_spec(spec, dir, ok, errors);
     if (!ok) return 2;
     if (mode == "--run-spec") {
         print_lines(files);
-        return 0;
+        return errors ? 2 : 0;
     }
     if (mode == "--check-spec") return files == spec.expect ? 0 : 1;
     std::fprintf(stderr, "unknown spec mode\n");
@@ -205,12 +232,17 @@ int cli_files(int argc, char** argv) {
 
     std::string out;
     std::mutex mu;
-    size_t files = 0;
+    size_t files = 0, errors = 0;
     for (const auto& p : paths) {
         fs::path root = p.empty() ? fs::path(".") : arg_path(p.c_str());
         std::string prefix = p;
         if (!prefix.empty() && prefix.back() != '/' && prefix.back() != '\\') prefix.push_back('/');
         bool root_is_file = !p.empty() && fs::is_regular_file(root);
+        o.on_error = [&](const WalkError& err) {
+            std::lock_guard<std::mutex> lk(mu);
+            ++errors;
+            print_walk_error(p, err);
+        };
         auto run = [&](bool collect) {
             walk(root, o, [&](const WalkEntry& e) {
                 if (e.type != EntryType::File && !(dirs && e.type == EntryType::Directory)) return true;
@@ -264,5 +296,5 @@ int cli_files(int argc, char** argv) {
         out.swap(sorted);
     }
     std::fwrite(out.data(), 1, out.size(), stdout);
-    return files ? 0 : 1;
+    return errors ? 2 : files ? 0 : 1;  // rg: any error makes the exit status 2
 }

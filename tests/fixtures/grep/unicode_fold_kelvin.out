@@ -24,3 +24,6 @@
 ./plain.txt:7:K
 ./plain.txt:7:k
 ./plain.txt:13:k
+./scripts.txt:1:k
+./scripts.txt:5:k
+./scripts.txt:7:k

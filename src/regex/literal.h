@@ -58,8 +58,14 @@ private:
     bool rare_ci_ = false;
     bool any_ci_ = false;
     std::vector<uint8_t> plain_;  // lit bytes (lowercase for ci)
+    size_t pair_[2] = {0, 0};     // offsets of the two bytes the packed-pair search keys on
+
+    // A rarest byte at or below this rank is left to memchr (fast when it seldom occurs);
+    // otherwise literals of 2+ bytes use the packed-pair search.
+    static constexpr int kMemchrRank = 90;
 
     bool verify(const uint8_t* p) const;
+    size_t find_pair(const uint8_t* hay, size_t start, size_t end) const;
 };
 
 // memchr for one of two bytes (SSE2 on x86-64). Returns pointer or nullptr.

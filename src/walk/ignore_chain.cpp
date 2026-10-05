@@ -36,10 +36,22 @@ std::string_view relative_to(const DirNode* owner, std::string_view rel, std::st
 
 } // namespace
 
+std::string_view IgnoreConfig::rg_candidate(std::string_view rel, std::string& scratch) const {
+    scratch.assign(rg_prefix);
+    if (!scratch.empty() && scratch.back() != '/') scratch.push_back('/');
+    scratch.append(rel);
+    std::string_view p = scratch;
+    if (p.substr(0, 2) == "./") p.remove_prefix(2);
+    if (!p.empty() && p.front() == '/' && p.find('/', 1) != std::string_view::npos) p.remove_prefix(1);
+    return p;
+}
+
 IgnoreMatch IgnoreConfig::matched(const DirNode& node, std::string_view rel, bool is_dir, bool hidden) const {
+    thread_local std::string cand_scratch;
+    const bool rg = dialect == IgnoreDialect::Rg;
     // Overrides first: any match decides; with include globs, unmatched files are ignored.
     if (!overrides.empty()) {
-        IgnoreMatch m = overrides.match(rel, is_dir, glob_icase);
+        IgnoreMatch m = overrides.match(rg ? rg_candidate(rel, cand_scratch) : rel, is_dir, glob_icase);
         if (m == IgnoreMatch::Ignore) return IgnoreMatch::Whitelist;
         if (m == IgnoreMatch::Whitelist) return IgnoreMatch::Ignore;
         if (override_includes > 0 && !is_dir) return IgnoreMatch::Ignore;
@@ -63,10 +75,13 @@ IgnoreMatch IgnoreConfig::matched(const DirNode& node, std::string_view rel, boo
                 break;
             }
         }
+        // ripgrep matches both against the path as it prints it; git anchors global excludes at
+        // the repository root.
         if (result == IgnoreMatch::None && has_global && any_git)
-            result = global.match(relative_to(node.repo, rel, scratch), is_dir, icase);
+            result = global.match(rg ? rg_candidate(rel, cand_scratch) : relative_to(node.repo, rel, scratch),
+                                  is_dir, icase);
         if (result == IgnoreMatch::None && !explicit_files.empty())
-            result = explicit_files.match(rel, is_dir, icase);
+            result = explicit_files.match(rg ? rg_candidate(rel, cand_scratch) : rel, is_dir, icase);
         if (result == IgnoreMatch::Ignore) return result;
     }
     if (result == IgnoreMatch::None && skip_hidden && hidden) return IgnoreMatch::Ignore;

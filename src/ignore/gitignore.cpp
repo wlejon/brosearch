@@ -3,6 +3,7 @@
 #include "brosearch/ignore.h"
 
 #include "ignore/git_repo.h"
+#include "ignore/rg_glob.h"
 
 #include <algorithm>
 
@@ -42,6 +43,60 @@ void trim_trailing_spaces(std::string& s) {
     if (last_space != std::string::npos) s.resize(last_space);
 }
 
+bool ends_with(std::string_view s, std::string_view suffix) {
+    return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
+}
+
+bool valid_utf8(std::string_view s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        const auto b = static_cast<unsigned char>(s[i]);
+        if (b < 0x80) {
+            ++i;
+            continue;
+        }
+        size_t n = (b >> 5) == 6 ? 2 : (b >> 4) == 14 ? 3 : (b >> 3) == 30 ? 4 : 0;
+        if (n == 0 || i + n > s.size()) return false;
+        uint32_t cp = n == 2 ? (b & 0x1F) : n == 3 ? (b & 0x0F) : (b & 0x07);
+        for (size_t k = 1; k < n; ++k) {
+            const auto c = static_cast<unsigned char>(s[i + k]);
+            if ((c & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (c & 0x3F);
+        }
+        if ((n == 2 && cp < 0x80) || (n == 3 && cp < 0x800) || (n == 4 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        i += n;
+    }
+    return true;
+}
+
+// Rust's str::trim_end: drops trailing White_Space characters (the line is valid UTF-8).
+std::string_view trim_end_unicode_space(std::string_view s) {
+    for (;;) {
+        if (s.empty()) return s;
+        const auto b = static_cast<unsigned char>(s.back());
+        if (b < 0x80) {
+            if (b == ' ' || (b >= '\t' && b <= '\r')) {
+                s.remove_suffix(1);
+                continue;
+            }
+            return s;
+        }
+        size_t start = s.size() - 1;
+        while (start > 0 && (static_cast<unsigned char>(s[start]) & 0xC0) == 0x80) --start;
+        uint32_t cp = 0;
+        const auto lead = static_cast<unsigned char>(s[start]);
+        const size_t n = s.size() - start;
+        cp = n == 2 ? (lead & 0x1F) : n == 3 ? (lead & 0x0F) : (lead & 0x07);
+        for (size_t k = start + 1; k < s.size(); ++k) cp = (cp << 6) | (static_cast<unsigned char>(s[k]) & 0x3F);
+        const bool ws = cp == 0x85 || cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) ||
+                        cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+        if (!ws) return s;
+        s.remove_suffix(n);
+    }
+}
+
 std::string path_to_utf8(const fs::path& p) {
     auto u = p.generic_u8string();
     return std::string(u.begin(), u.end());
@@ -65,11 +120,24 @@ size_t depth_of(std::string_view base) {
 
 } // namespace
 
+bool rg_glob_match(std::string_view glob, std::string_view text, bool case_insensitive) {
+    auto g = detail::RgGlob::compile(glob);
+    return g && g->match(text, case_insensitive);
+}
+
+bool rg_glob_valid(std::string_view glob, std::string* error) {
+    return detail::RgGlob::compile(glob, error) != nullptr;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Gitignore
 
 void Gitignore::add_line(std::string_view line) {
     if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    if (dialect_ == IgnoreDialect::Rg) {
+        add_line_rg(line);
+        return;
+    }
     if (line.empty() || line.front() == '#') return;
     std::string s(line);
     trim_trailing_spaces(s);
@@ -99,6 +167,55 @@ void Gitignore::add_line(std::string_view line) {
     rules_.push_back(std::move(r));
 }
 
+// The ignore crate's GitignoreBuilder::add_line.
+void Gitignore::add_line_rg(std::string_view line) {
+    if (!line.empty() && line.front() == '#') return;
+    if (!ends_with(line, "\\ ")) line = trim_end_unicode_space(line);
+    if (line.empty()) return;
+
+    IgnoreRule r;
+    r.original = std::string(line);
+    bool absolute = false;
+    if (line.substr(0, 2) == "\\!" || line.substr(0, 2) == "\\#") {
+        line.remove_prefix(1);
+    } else {
+        if (line.front() == '!') {
+            r.negated = true;
+            line.remove_prefix(1);
+        }
+        if (!line.empty() && line.front() == '/') {
+            line.remove_prefix(1);
+            absolute = true;
+        }
+    }
+    if (!line.empty() && line.back() == '/') {
+        r.dir_only = true;
+        line.remove_suffix(1);
+        if (!line.empty() && line.back() == '\\') line.remove_suffix(1);  // "foo\/"
+    }
+    std::string actual(line);
+    const bool anywhere = !absolute && line.find('/') == std::string_view::npos;
+    if (anywhere && !(actual.rfind("**/", 0) == 0 || actual == "**")) actual.insert(0, "**/");
+    if (ends_with(actual, "/**")) actual += "/*";
+    r.rg = detail::RgGlob::compile(actual);
+    if (!r.rg) return;  // ripgrep reports the line and skips it
+    // Fast paths: "**/lit" is a basename compare, "**/*lit" a basename suffix compare.
+    if (anywhere && !line.empty() && line.find_first_of("*?[]{}\\,") == std::string_view::npos) {
+        r.basename_only = true;
+        r.kind = IgnoreRule::Kind::Literal;
+        r.pattern = std::string(line);
+    } else if (anywhere && line.size() > 1 && line.front() == '*' &&
+               line.substr(1).find_first_of("*?[]{}\\,") == std::string_view::npos) {
+        r.basename_only = true;
+        r.kind = IgnoreRule::Kind::Suffix;
+        r.pattern = std::string(line);
+    } else {
+        r.pattern = std::move(actual);
+    }
+    if (r.negated) ++whitelists_;
+    rules_.push_back(std::move(r));
+}
+
 void Gitignore::add_content(std::string_view content) {
     if (content.size() >= 3 && static_cast<unsigned char>(content[0]) == 0xEF &&
         static_cast<unsigned char>(content[1]) == 0xBB && static_cast<unsigned char>(content[2]) == 0xBF)
@@ -107,7 +224,10 @@ void Gitignore::add_content(std::string_view content) {
     while (i < content.size()) {
         size_t nl = content.find('\n', i);
         if (nl == std::string_view::npos) nl = content.size();
-        add_line(content.substr(i, nl - i));
+        std::string_view line = content.substr(i, nl - i);
+        // The ignore crate reads lines as UTF-8 and stops at the first one that is not.
+        if (dialect_ == IgnoreDialect::Rg && !valid_utf8(line)) break;
+        add_line(line);
         i = nl + 1;
     }
 }
@@ -127,7 +247,9 @@ IgnoreMatch Gitignore::match(std::string_view path, bool is_dir, bool icase) con
         const IgnoreRule& r = rules_[i];
         if (r.dir_only && !is_dir) continue;
         bool m;
-        if (r.basename_only) {
+        if (r.rg && r.kind == IgnoreRule::Kind::Glob) {
+            m = r.rg->match(path, icase);
+        } else if (r.basename_only) {
             switch (r.kind) {
             case IgnoreRule::Kind::Literal:
                 m = equals(base, r.pattern, icase);

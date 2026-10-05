@@ -1,0 +1,6 @@
+./multi.txt:2:3:beta two
+./multi.txt:4:14:alpha four beta
+./multi.txt:5:14:delta five
+./multi.txt:7:3:beta six
+./multi.txt:8:3:zeta seven
+./multi.txt:10:3:beta

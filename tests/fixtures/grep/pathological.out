@@ -1,6 +1,7 @@
 ./bom8.txt:2
 ./crlf.txt:2
 ./latin1.txt:2
+./multi.txt:4
 ./plain.txt:3
 ./utf16be.txt:1
 ./words.txt:4

@@ -1,5 +1,7 @@
 ./context.txt:3
 ./crlf.txt:3
+./multi.txt:1
 ./plain.txt:5
+./scripts.txt:3
 ./sub/deep/nested.txt:1
 ./words.txt:8

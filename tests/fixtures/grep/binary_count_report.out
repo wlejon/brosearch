@@ -1,0 +1,14 @@
+./binary_big.dat:1
+./binary_early.bin:1
+./binary_late.dat:4
+./binary_mixed.dat:4
+./bom8.txt:1
+./latin1.txt:3
+./longline.txt:1
+./noeol.txt:2
+./plain.txt:1
+./sub/deep/nested.txt:1
+./tiny_bin1.dat:2
+./tiny_bin2.dat:3
+./utf16be.txt:1
+./utf16le.txt:2

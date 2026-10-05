@@ -34,7 +34,7 @@ void append_wtf8(const wchar_t* s, size_t n, std::string& out) {
     }
 }
 
-bool read_dir(const NativeString& dir, DirListing& out) {
+bool read_dir(const NativeString& dir, DirListing& out, std::error_code& ec) {
     out.clear();
     std::wstring pattern = dir;
     if (pattern.empty() || pattern.back() != L'\\') pattern.push_back(L'\\');
@@ -42,7 +42,12 @@ bool read_dir(const NativeString& dir, DirListing& out) {
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
                                 FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD err = GetLastError();
+        if (err == ERROR_FILE_NOT_FOUND) return true;  // an empty volume root (no "." entry)
+        ec.assign(static_cast<int>(err), std::system_category());
+        return false;
+    }
     do {
         const wchar_t* n = fd.cFileName;
         if (n[0] == L'.' && (n[1] == 0 || (n[1] == L'.' && n[2] == 0))) continue;

@@ -106,7 +106,7 @@ void Walker::load_dir_files(DirNode& node, const NativeString& dir, bool has_git
         NativeString p = dir;
         p.push_back(detail::kNativeSep);
         for (const char* c = name; *c; ++c) p.push_back(static_cast<NativeString::value_type>(*c));
-        auto gi = std::make_unique<Gitignore>();
+        auto gi = std::make_unique<Gitignore>(opts_.dialect);
         if (gi->add_file(fs::path(p)) && !gi->empty()) slot = std::move(gi);
     };
     if (has_rgignore) load(node.custom, ".rgignore");
@@ -114,7 +114,7 @@ void Walker::load_dir_files(DirNode& node, const NativeString& dir, bool has_git
     if (has_gitignore) load(node.git, ".gitignore");
     if (has_git_entry && track_git_ && opts_.git_exclude) {
         if (auto dirs = detail::resolve_git_dirs(fs::path(dir))) {
-            auto gi = std::make_unique<Gitignore>();
+            auto gi = std::make_unique<Gitignore>(opts_.dialect);
             if (gi->add_file(dirs->common_dir / "info" / "exclude") && !gi->empty()) node.exclude = std::move(gi);
         }
     }
@@ -143,7 +143,19 @@ bool Walker::emit(std::string_view rel, EntryType type, size_t depth, const Nati
 }
 
 void Walker::process(Task& task, detail::DirListing& listing, std::vector<Task>& out) {
-    if (!detail::read_dir(task.enum_dir, listing)) return;
+    std::error_code read_ec;
+    if (!detail::read_dir(task.enum_dir, listing, read_ec)) {
+        if (opts_.on_error) {
+            const fs::path shown(task.disp_dir);
+            WalkError err;
+            err.op = WalkError::Op::ReadDir;
+            err.rel_path = task.rel;
+            err.native_path = &shown;
+            err.error = read_ec;
+            opts_.on_error(err);
+        }
+        return;
+    }
     const auto& entries = listing.entries;
 
     auto node = std::make_shared<DirNode>();
@@ -269,7 +281,17 @@ void Walker::worker() {
 void Walker::run(const fs::path& root) {
     std::error_code ec;
     fs::file_status st = fs::status(root, ec);
-    if (ec || !fs::exists(st)) return;
+    if (ec || !fs::exists(st)) {
+        if (opts_.on_error) {
+            WalkError err;
+            err.op = WalkError::Op::Stat;
+            err.native_path = &root;
+            // ENOENT / ERROR_FILE_NOT_FOUND (both 2) when the library reports not_found without a code.
+            err.error = ec ? ec : std::error_code(2, std::system_category());
+            opts_.on_error(err);
+        }
+        return;
+    }
     if (!fs::is_directory(st)) {
         std::string name = to_utf8(root.filename());
         WalkEntry e;
@@ -292,6 +314,14 @@ void Walker::run(const fs::path& root) {
     cfg_.glob_icase = opts_.glob_case_insensitive;
     cfg_.icase = detail::resolve_ignorecase(opts_.ignore_case, abs);
     precompose_ = detail::resolve_precompose(opts_.precompose_unicode, abs);
+    cfg_.dialect = opts_.dialect;
+    cfg_.overrides = Gitignore(opts_.dialect);
+    cfg_.global = Gitignore(opts_.dialect);
+    cfg_.explicit_files = Gitignore(opts_.dialect);
+    if (opts_.dialect == IgnoreDialect::Rg) {
+        cfg_.rg_prefix = to_utf8(opts_.display_root.empty() ? root : opts_.display_root);
+        while (cfg_.rg_prefix.size() > 1 && cfg_.rg_prefix.back() == '/') cfg_.rg_prefix.pop_back();
+    }
     for (const auto& g : opts_.globs) cfg_.overrides.add_line(g);
     cfg_.override_includes = cfg_.overrides.size() - cfg_.overrides.whitelist_count();
     if (opts_.git_global) {

@@ -1,0 +1,4 @@
+./latin1.txt:2:ÿþ broken hello
+./latin1.txt:3:ok line
+./noeol.txt:1:first hello
+./noeol.txt:2:second

@@ -1,6 +1,7 @@
 #include "harness.h"
 
 #include "brosearch/regex.h"
+#include "regex/literal.h"
 #include "regex/matcher.h"
 #include "regex/pikevm.h"
 
@@ -142,6 +143,28 @@ TEST(regex, anchors_and_boundaries) {
     CHECK_EQ(first("#foo", "a#foo #foo#", w), std::optional<P>(P{6, 10}));
 }
 
+TEST(regex, script_properties) {
+    // Greek alpha, Cyrillic a, Han, hiragana a, combining acute (Inherited), U+0951 (scx Deva...).
+    CHECK_EQ(first("\\p{Greek}+", "ab\xCE\xB1\xCE\xB2z"), std::optional<P>(P{2, 6}));
+    CHECK_EQ(first("\\p{sc=Grek}", "\xD0\xB0\xCE\xB1"), std::optional<P>(P{2, 4}));
+    CHECK_EQ(first("\\p{Script=greek}", "\xCE\xB1"), std::optional<P>(P{0, 2}));
+    CHECK_EQ(first("\\p{Cyrillic}", "\xCE\xB1\xD0\xB0"), std::optional<P>(P{2, 4}));
+    CHECK_EQ(first("\\p{Han}", "a\xE4\xB8\xAD"), std::optional<P>(P{1, 4}));
+    CHECK_EQ(first("\\P{Latin}", "ab1"), std::optional<P>(P{2, 3}));
+    CHECK_EQ(first("[\\p{Hiragana}\\p{Greek}]+", "x\xE3\x81\x82\xCE\xB1"), std::optional<P>(P{1, 6}));
+    CHECK_EQ(first("\\p{Inherited}", "e\xCC\x81"), std::optional<P>(P{1, 3}));
+    // U+0951 DEVANAGARI STRESS SIGN UDATTA: sc=Inherited, scx lists Devanagari among others.
+    CHECK_EQ(first("\\p{sc=Deva}", "\xE0\xA5\x91"), std::optional<P>());
+    CHECK_EQ(first("\\p{scx=Deva}", "\xE0\xA5\x91"), std::optional<P>(P{0, 3}));
+    CHECK_EQ(first("\\p{scx=Zinh}", "\xE0\xA5\x91"), std::optional<P>());
+    // U+30FC KATAKANA-HIRAGANA PROLONGED SOUND MARK: sc=Common, scx={Hira, Kana}.
+    CHECK_EQ(first("\\p{Hiragana}", "\xE3\x83\xBC"), std::optional<P>());
+    CHECK_EQ(first("\\p{scx=Hira}", "\xE3\x83\xBC"), std::optional<P>(P{0, 3}));
+    CHECK_EQ(first("\\p{Common}", "\xE3\x83\xBC"), std::optional<P>(P{0, 3}));
+    // General categories win over a script of the same loose name (none collide today).
+    CHECK_EQ(first("\\p{L}", "\xCE\xB1"), std::optional<P>(P{0, 2}));
+}
+
 TEST(regex, syntax_errors) {
     CHECK(!compiles("(a"));
     CHECK(!compiles("a)"));
@@ -151,7 +174,12 @@ TEST(regex, syntax_errors) {
     CHECK(!compiles("[a"));
     CHECK(!compiles("[z-a]"));
     CHECK(!compiles("(?=a)"));
-    CHECK(!compiles("\\p{Greek}"));
+    CHECK(!compiles("\\p{NoSuchScript}"));
+    CHECK(!compiles("\\p{scx=Bogus}"));
+    // regex-syntax (rg) has no tables for these two recognised names.
+    CHECK(!compiles("\\p{Unknown}"));
+    CHECK(!compiles("\\p{sc=Zzzz}"));
+    CHECK(!compiles("\\p{scx=Hrkt}"));
     CHECK(!compiles("\\q"));
     CHECK(!compiles("a{"));
     CHECK(!compiles("(?P<n>a)(?P<n>b)"));
@@ -302,4 +330,56 @@ TEST(regex, find_line_matches_pikevm_random) {
         ++checked;
     }
     CHECK(checked > 2000);
+}
+
+// LiteralFinder against a naive scan. Literals over common bytes take the packed-pair path
+// (16 candidates per step, then a scalar tail); short haystacks, literals planted at the very end,
+// ranges starting mid-buffer and ASCII-case-insensitive bytes probe its block and tail edges.
+TEST(regex, literal_finder_matches_naive_search) {
+    using rx::LitByte;
+    CHECK(rx::byte_rank('e') > 90 && rx::byte_rank(' ') > 90);  // the pair path is exercised
+    std::mt19937 rng(20261004);
+    auto rnd = [&](size_t n) { return static_cast<size_t>(rng() % n); };
+    const std::string alphabets[] = {"et ", "eEtT ", "ab", std::string("e\xC3z"), "qx"};
+    size_t checked = 0;
+    for (int iter = 0; iter < 6000; ++iter) {
+        const std::string& alpha = alphabets[iter % 5];
+        const bool ci_any = iter % 3 == 0;
+        const size_t n = 2 + rnd(19);
+        rx::Literal lit;
+        for (size_t i = 0; i < n; ++i) {
+            const auto c = static_cast<uint8_t>(alpha[rnd(alpha.size())]);
+            const bool letter = (c | 0x20) >= 'a' && (c | 0x20) <= 'z';
+            const bool ci = ci_any && letter && rnd(2) == 1;
+            lit.push_back(LitByte{ci ? static_cast<uint8_t>(c | 0x20) : c, ci});
+        }
+        const size_t hl = rnd(90);
+        std::string hay;
+        for (size_t i = 0; i < hl; ++i) hay.push_back(alpha[rnd(alpha.size())]);
+        if (hl >= n && rnd(2) == 1) {
+            const size_t at = rnd(2) == 1 ? hl - n : rnd(hl - n + 1);
+            for (size_t i = 0; i < n; ++i) {
+                uint8_t c = lit[i].b;
+                if (lit[i].ci && rnd(2) == 1) c = static_cast<uint8_t>(c - 32);
+                hay[at + i] = static_cast<char>(c);
+            }
+        }
+        const size_t start = rnd(hl + 1);
+        const size_t end = start + rnd(hl - start + 1);
+        size_t want = SIZE_MAX;
+        for (size_t p = start; p + n <= end && want == SIZE_MAX; ++p) {
+            bool ok = true;
+            for (size_t i = 0; i < n && ok; ++i) {
+                const auto c = static_cast<uint8_t>(hay[p + i]);
+                ok = lit[i].ci ? static_cast<uint8_t>(c | 0x20) == lit[i].b : c == lit[i].b;
+            }
+            if (ok) want = p;
+        }
+        const rx::LiteralFinder f(lit);
+        const size_t got = f.find(reinterpret_cast<const uint8_t*>(hay.data()), start, end);
+        CHECK_MSG(got == want, "literal finder: iter " << iter << " got " << got << " want " << want);
+        if (got != want) return;
+        ++checked;
+    }
+    CHECK(checked == 6000);
 }

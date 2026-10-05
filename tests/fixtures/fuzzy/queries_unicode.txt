@@ -79,3 +79,8 @@
 --tiebreak=chunk	café
 --algo=v1	cafe
 --algo=v1	αθήνα
+--nth=1	cafe
+--nth=2	a
+--nth=-1	é
+--nth=2.. --tac	data
+--tac	ǆ

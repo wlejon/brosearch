@@ -198,6 +198,10 @@ bool is_word_codepoint(uint32_t cp) {
 }
 
 bool unicode_property(std::string_view raw, CharSet* out) {
+    return unicode_general_category(raw, out) || unicode_script(raw, false, out);
+}
+
+bool unicode_general_category(std::string_view raw, CharSet* out) {
     struct Alias {
         const char* name;
         std::initializer_list<const char*> cats;

@@ -47,6 +47,14 @@ struct GrepOptions {
     bool whole_line = false;     // rg -x
     bool invert = false;         // rg -v: select non-matching lines
     bool crlf = false;           // rg --crlf: ^/$ treat "\r\n" as a line terminator
+    // rg -U: matches may span lines ('\n' and \s can match a line terminator; '.' only with
+    // multiline_dotall) and every line a match touches is reported. Matches whose lines overlap
+    // or are adjacent form one block (GrepLineView::region_continued). Under multiline,
+    // max_count and GrepFileResult::matched_lines (rg -c) count matches, as rg does. Inverted,
+    // the selected lines are those outside every match. A pattern that can never match
+    // '\n' is searched line by line anyway (Grep::options().multiline then reads false).
+    bool multiline = false;
+    bool multiline_dotall = false;  // rg --multiline-dotall: '.' matches '\n' too
     bool unicode = true;         // (?u) default for the pattern
     size_t before_context = 0;   // rg -B
     size_t after_context = 0;    // rg -A
@@ -56,6 +64,9 @@ struct GrepOptions {
     uint64_t max_filesize = 0;   // files larger than this are skipped (0 = no limit)
     bool line_numbers = true;    // compute GrepLine::line_number (counting costs a pass over the data)
     bool collect_spans = true;   // compute the match spans of each matching line
+    // At most this many spans per reported line (0 = all). 1 is enough for a column number and
+    // saves rescanning the rest of the line; GrepFileResult::matches then counts reported spans.
+    size_t max_spans_per_line = 0;
     bool collect_lines = true;   // file searches: store lines in GrepFileResult (false = counts only)
     size_t threads = 0;          // multi-file searches: 0 = hardware concurrency (capped)
     size_t regex_size_limit = size_t(1) << 22;
@@ -64,6 +75,8 @@ struct GrepOptions {
 struct GrepSpan {
     size_t start = 0;  // byte offsets within GrepLine::text
     size_t end = 0;
+    // Multiline only: this is the part of a match that began on an earlier line.
+    bool continued = false;
     bool operator==(const GrepSpan&) const = default;
 };
 
@@ -76,6 +89,9 @@ struct GrepLineView {
     uint64_t byte_offset = 0;  // of the line start in the searched (decoded) content
     std::string_view text;     // without the line terminator
     std::span<const GrepSpan> spans;  // match spans (empty for context and inverted matches)
+    // Multiline only: this match line belongs to the same region as the previous reported line
+    // (a match runs across them, or matches on shared lines merged them).
+    bool region_continued = false;
 };
 
 struct GrepLine {
@@ -94,6 +110,10 @@ struct GrepFileResult {
     bool binary = false;           // a NUL byte was found (search stopped there in Quit mode)
     uint64_t binary_offset = 0;    // offset of the first NUL in the decoded content
     bool binary_matched = false;   // Report mode: the binary file matched (lines suppressed)
+    // Report mode: start of the line at which reporting stopped because of binary data
+    // (UINT64_MAX if it did not). rg prints a context separator there when context is on and
+    // the line does not follow the last reported one.
+    uint64_t binary_stop_offset = UINT64_MAX;
     uint64_t bytes_searched = 0;
     std::string error;             // I/O error (file unreadable), empty on success
 };
@@ -112,6 +132,27 @@ struct GrepStats {
 using LineSink = std::function<bool(const GrepLineView&)>;
 // Called once per file that has matches (or an error), serialized across worker threads.
 using FileSink = std::function<bool(const GrepFileResult&)>;
+
+// Streaming per-file output: the worker thread searching a file hands its lines straight to a
+// visitor, so nothing is stored or copied per line (the collecting overloads keep a GrepLine,
+// with its own string and span vector, for every reported line).
+class GrepFileVisitor {
+public:
+    virtual ~GrepFileVisitor() = default;
+    // A match or context line, in file order; the views are valid during the call only.
+    // Return false to stop searching this file.
+    virtual bool line(const GrepLineView& line) = 0;
+    // The file is done: counts, binary flags and error (GrepFileResult::lines is always empty).
+    // Return false to stop the whole search.
+    virtual bool finish(const GrepFileResult& result) {
+        (void)result;
+        return true;
+    }
+};
+// Makes the visitor for one file. Called in the worker thread, lazily: only for a file that
+// reports a line, a binary match or an error, so files without output cost no visitor. Called
+// concurrently for different files; a visitor itself is used by one thread at a time.
+using GrepVisitorFactory = std::function<std::unique_ptr<GrepFileVisitor>(std::string_view path)>;
 
 class Grep {
 public:
@@ -138,6 +179,16 @@ public:
     void search_tree(const std::filesystem::path& root, const WalkOptions& walk_options, const FileSink& sink,
                      const CancellationToken* token = nullptr, GrepStats* stats = nullptr) const;
 
+    // Streaming forms: lines go to visitors (see GrepFileVisitor) instead of being collected.
+    // `display` names the file in GrepFileResult::path and the factory call.
+    GrepFileResult search_file(const std::filesystem::path& file, std::string display, GrepFileVisitor& visitor,
+                               const CancellationToken* token = nullptr) const;
+    void search_files(const std::vector<std::filesystem::path>& files, const GrepVisitorFactory& make,
+                      const CancellationToken* token = nullptr, GrepStats* stats = nullptr) const;
+    void search_tree(const std::filesystem::path& root, const WalkOptions& walk_options,
+                     const GrepVisitorFactory& make, const CancellationToken* token = nullptr,
+                     GrepStats* stats = nullptr) const;
+
     [[nodiscard]] const GrepOptions& options() const noexcept { return options_; }
     [[nodiscard]] const Regex& regex() const noexcept { return *regex_; }
 
@@ -148,8 +199,14 @@ private:
     struct CachePool;
     std::shared_ptr<CachePool> pool_;
 
+    // Searches one file, reporting lines to `sink` (or counting only when it is null).
+    GrepFileResult search_path(const std::filesystem::path& file, std::string display,
+                               const CancellationToken* token, const LineSink* sink) const;
     GrepFileResult search_path(const std::filesystem::path& file, std::string display,
                                const CancellationToken* token) const;
+    // Streams one file to a lazily made visitor; false when the visitor stopped the search.
+    bool stream_path(const std::filesystem::path& file, std::string display, const GrepVisitorFactory& make,
+                     const CancellationToken* token, GrepFileResult& result) const;
 };
 
 // Terminal helpers: URLs (http/https/ftp/file schemes) and git object hashes (7-40 hex digits as

@@ -1,0 +1,2 @@
+./binary_big.dat:1:row 1
+./binary_big.dat: binary file matches (found "\0" byte around offset 188895)

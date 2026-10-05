@@ -5,7 +5,8 @@
 // guarantees O(haystack x pattern) time for every input.
 //
 // Syntax summary: . [abc] [^a-z] [[:alpha:]] [a-z&&[^aeiou]] [\w--\d] \d \w \s \D \W \S \pL \p{Lu}
-// \P{N} (general categories; script properties are not supported); ^ $ \A \z \b \B \< \> \b{start} \b{end}
+// \P{N} \p{Greek} \p{sc=Grek} \p{scx=Hira} (general categories, scripts and script extensions,
+// Unicode 16); ^ $ \A \z \b \B \< \> \b{start} \b{end}
 // \b{start-half} \b{end-half}; * + ? {n} {n,} {,m} {n,m} and lazy variants; (..) (?:..) (?P<n>..)
 // (?<n>..); flags (?imsUxuR-imsUxuR) and (?flags:..); escapes \t \n \r \f \v \a \xHH \x{H..}
 // \uHHHH \u{..} \UHHHHHHHH and any escaped ASCII punctuation.
