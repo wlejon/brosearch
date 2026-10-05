@@ -13,7 +13,9 @@ if(BROSEARCH_COVERAGE AND PROJECT_IS_TOP_LEVEL)
     if(MSVC)
         message(FATAL_ERROR "BROSEARCH_COVERAGE requires GCC or Clang (gcov instrumentation)")
     endif()
-    add_compile_options(--coverage -O0 -g)
+    # Atomic counters: the parallel walk and batch fuzzy filter run the same
+    # lines on many threads, and racing plain counters give gcov negative hits.
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
     add_link_options(--coverage)
 endif()
 
