@@ -1,0 +1,13 @@
+./.hidden.txt:1:hello hidden
+./bom8.txt:1:hello bom
+./latin1.txt:1:café hello
+./latin1.txt:2:ÿþ broken hello
+./latin1.txt:4:Ã( bad seq hello
+./longline.txt:2:short hello
+./noeol.txt:1:first hello
+./noeol.txt:3:third hello
+./sub/deep/nested.txt:1:hello nested
+./sub/ignored_by_dotignore.txt:1:hello ignored
+./utf16be.txt:1:hello big endian
+./utf16le.txt:1:hello utf16
+./utf16le.txt:3:ðŸ˜€ emoji hello

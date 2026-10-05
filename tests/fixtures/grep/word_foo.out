@@ -1,0 +1,5 @@
+./plain.txt:4:9:foo_bar foo-bar foobar
+./plain.txt:11:3:x-foo -foo #foo# a#foo
+./words.txt:1:1:foo bar
+./words.txt:7:2:(foo)
+./words.txt:8:1:foo.bar

@@ -1,0 +1,11 @@
+./context.txt-1-one
+./context.txt:2:two match
+./context.txt-3-three
+--
+./context.txt-5-five
+./context.txt:6:six match
+./context.txt:7:seven match
+./context.txt-8-eight
+--
+./context.txt-11-eleven
+./context.txt:12:twelve match

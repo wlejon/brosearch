@@ -1,0 +1,21 @@
+# Queries for scripts/diff_grep.sh --real DIR: name<TAB>rg arguments (before the path).
+literal_common	return
+literal_rare	flushLayoutForRead
+literal_ci	-i 'skia'
+fixed_meta	-F 'std::vector<'
+word	-w 'int'
+regex_ident	'[A-Z][a-z]+Renderer'
+regex_call	'\w+\(\)'
+regex_alt	'TODO|FIXME|XXX'
+regex_anchor	'^#include <'
+regex_unicode	'[α-ωΑ-Ω]+|\p{Lu}\p{Ll}+é'
+regex_class	'0x[0-9a-fA-F]{8}'
+smart_case	-S 'gl'
+invert_count	-c -v ';'
+count_matches	--count-matches 'e'
+only	-o 'bro::\w+'
+context	-C2 'assert\('
+max_count	-m3 'void'
+nothing	'zzqqzzqq_no_match'
+dot_star	'struct .*\w+ \{'
+invalid_regex	'struct .* {'

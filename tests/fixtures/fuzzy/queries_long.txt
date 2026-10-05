@@ -1,0 +1,31 @@
+# flags<TAB>query, run over the generated long-line corpus (tests/fuzzy_corpus_gen.h).
+# Items are 200..6000 chars, so queries longer than ~17 chars exceed fzf's V2 slab
+# (len(item) * len(query) > 102400) on the longest items and take the V1 fallback.
+	a
+	rs
+	rend
+	scene
+	alphabeta
+	rendergraph
+	shadercompile
+	texturebuffer
+	alphabetagammadelta
+	rendersceneshadermesh
+	alphabetagammadeltazetaomega
+	scenegraphnodemeshbuffertexture
+	Render scene
+	Buffer
+	cafe
+	naïve
+	'shader'
+	^alpha
+	omega$
+	!x alpha
+	rendersceneshadermeshbuffertexture
+-i	RENDERSCENESHADERMESHBUFFER
++i	RenderScene
+--scheme=path	alphabetagammadeltazeta
+--tiebreak=begin	alphabetagammadeltazeta
+--tiebreak=end	alphabetagammadeltazeta
+--tiebreak=chunk	shader mesh
+--algo=v1	rendergraph

@@ -1,0 +1,31 @@
+./bom8.txt:1:8:hello bom
+./bom8.txt:2:4:second bom line
+./bom8.txt:2:9:second bom line
+./context.txt:1:1:one
+./context.txt:4:2:four
+./latin1.txt:2:6:�� broken hello
+./latin1.txt:3:1:ok line
+./longline.txt:2:3:short hello
+./noeol.txt:2:4:second
+./plain.txt:1:8:Hello world
+./plain.txt:2:8:hello World
+./plain.txt:4:2:foo_bar foo-bar foobar
+./plain.txt:4:10:foo_bar foo-bar foobar
+./plain.txt:4:18:foo_bar foo-bar foobar
+./plain.txt:11:4:x-foo -foo #foo# a#foo
+./plain.txt:11:9:x-foo -foo #foo# a#foo
+./plain.txt:11:14:x-foo -foo #foo# a#foo
+./plain.txt:11:21:x-foo -foo #foo# a#foo
+./plain.txt:13:14:last line before blank
+./sub/deep/nested.txt:2:2:nothing
+./utf16be.txt:2:1:other
+./utf16le.txt:2:4:second line été
+./utf16le.txt:3:8:😀 emoji hello
+./words.txt:1:2:foo bar
+./words.txt:2:2:foobar
+./words.txt:3:5:barfoo
+./words.txt:4:2:foo_x
+./words.txt:5:4:éfoo
+./words.txt:6:2:fooé
+./words.txt:7:3:(foo)
+./words.txt:8:2:foo.bar

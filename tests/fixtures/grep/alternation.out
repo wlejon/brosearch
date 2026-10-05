@@ -1,0 +1,3 @@
+./longline.txt:1:needle_at_end
+./sub/deep/nested.txt:1:nested
+./utf16le.txt:3:emoji

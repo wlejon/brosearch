@@ -1,0 +1,7 @@
+./latin1.txt:1:café hello
+./latin1.txt:2:ÿþ broken hello
+./latin1.txt:4:Ã( bad seq hello
+./longline.txt:2:short hello
+./noeol.txt:1:first hello
+./noeol.txt:3:third hello
+./utf16le.txt:3:ðŸ˜€ emoji hello

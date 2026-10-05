@@ -1,0 +1,6 @@
+./latin1.txt:2:broken hello
+./latin1.txt:4:seq hello
+./longline.txt:2:short hello
+./noeol.txt:1:first hello
+./noeol.txt:3:third hello
+./utf16le.txt:3:emoji hello

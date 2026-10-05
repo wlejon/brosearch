@@ -1,0 +1,8 @@
+./bom8.txt:1
+./latin1.txt:3
+./longline.txt:1
+./noeol.txt:2
+./plain.txt:1
+./sub/deep/nested.txt:1
+./utf16be.txt:1
+./utf16le.txt:2

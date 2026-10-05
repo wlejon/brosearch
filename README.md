@@ -1,113 +1,74 @@
 # brosearch
 
-`brosearch` is the high-performance, multithreaded Search and Fuzzy Matching engine for the Bro ecosystem (`bro.search`).
+The search layer behind bro's file manager, launcher and terminal tools: fuzzy matching, file
+finding and content grep. It is a standalone C++20 library that needs only the standard library
+and threads. It does not depend on bro or bronze and has no JS binding. Everything lives in
+namespace `bro::search`, behind the umbrella header `<brosearch/search.h>`.
 
-It powers sub-millisecond search experiences across Bro applications:
-- **Terminal (`bropty`)**: Instant regex search across 500,000 lines of scrollback buffer, URL/git-commit detection, and fzf-style fuzzy command history search.
-- **File Explorer (`brovfs`)**: Sub-millisecond fuzzy filtering of 50,000+ files as the user types in the search bar, plus project-wide multithreaded text and regex grep.
-- **General Bro Apps**: Code editor find-in-files, quick-open command palettes (`Ctrl+P`), asset filtering.
+The bar is agreement with the reference tools, which the test suite holds it to:
 
-Pure C++20 engine designed to be embedded directly into Bro and sibling projects with zero external dependencies.
+- **fuzzy** = `fzf --filter`
+- **finder** = `rg --files`, with `git ls-files` / `git check-ignore` as references
+- **grep** = `rg`
 
----
+## Modules
 
-## Features
+| Header | What |
+|--------|------|
+| `fuzzy.h` | `FuzzyQuery` / `fuzzy_match` / `fuzzy_filter`: fzf's v2 algorithm (with its V1 fallback for long items) and fzf's extended query syntax (`'exact ^prefix suffix$ !not a\|b`), with smart case, Latin diacritic folding and fzf's default, path and history scoring schemes. Ranking and tie-breaks match fzf. Batch filtering is multithreaded and can be cancelled. |
+| `fuzzy_index.h` | `FuzzyIndex`: an append-only item store for incremental and streaming use. Searches run concurrently with `add()`, and a refined query only re-scans the matches cached from its prefix, as in fzf. Results always equal a cold search. |
+| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics. `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg. |
+| `walk.h` | `walk` / `list_files`: a parallel directory walk with pruning. It honours `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, global excludes and parent-directory ignore files with rg's precedence, plus `-g` overrides. Nothing is ignored by default beyond what rg ignores. |
+| `regex.h` | `Regex`: our own linear-time engine with Rust/rg syntax (see below). |
+| `grep.h` | `Grep`: rg-compatible line search over buffers, files, file lists and trees. Covers fixed strings, smart/insensitive case, `-w`/`-x`, invert, context lines, max count, UTF-8 and UTF-16 BOM decoding, binary detection (rg's quit/convert models), stats and prompt cancellation. Also has terminal helpers `detect_urls` / `detect_git_hashes`. |
+| `cancellation_token.h` | `CancellationSource` / `CancellationToken`, accepted by every long-running call. |
 
-- **`fuzzy_matcher` (`brosearch/fuzzy.h`)**:
-  - High-performance fzf-style fuzzy matching.
-  - Boundary bonuses: after `/`, `\`, `-`, `_`, `.`, space, or lowercase-to-uppercase `camelCase` transitions.
-  - Consecutive match bonuses and non-consecutive gap penalties.
-  - Exact match and path-mode prioritization.
-  - Returns match scores and an array of 0-indexed character offsets for UI highlight rendering.
-  - Fast multithreaded batch ranking API (`rank_candidates`).
-- **`content_grep` (`brosearch/grep.h`)**:
-  - Fast Boyer-Moore-Horspool literal substring matcher and optimized regex search.
-  - Returns 1-indexed line numbers, 1-indexed columns, match byte lengths, and line content snippets.
-  - Automatic binary file detection to avoid corrupting UI or wasting memory.
-  - Responsive `CancellationToken` support for live as-you-type search queries.
-  - Scrollback buffer helpers, URL detection, and git hash detection.
-- **`ignore_filter` (`brosearch/ignore.h`)**:
-  - Gitignore specification parser: supports `*`, `**`, `?`, `[...]`, negation `!`, directory-only trailing `/`, and leading `/`.
-  - Built-in default ignore list (`.git`, `node_modules`, `.vs`, `build`, `dist`, `.cache`, etc.).
-  - Hierarchical `.gitignore` support for nested subdirectories.
-- **`file_finder` (`brosearch/finder.h`)**:
-  - Multithreaded directory walker combining `ignore_filter` pruning with filename glob or fuzzy matching.
-  - Prunes ignored subtrees before descending for maximum I/O performance.
-  - Streaming callback and batch vector collection APIs.
+## Regex engine (`src/regex/`)
 
----
+It has no dependencies: RE2 would pull in abseil, and PCRE backtracks.
 
-## Architecture & Module Layout
+- The parser goes straight to a HIR. Flags are applied there: Unicode simple case folding, `\w`, `\d`, `\s`, general categories, and the grep line terminator ban.
+- The HIR compiles to a byte-level Thompson NFA, with UTF-8 range compilation for both the forward and reverse programs.
+- **Lazy DFA.** Its states carry the previous byte's context class, so every look-around is exact (`^ $ \b \B`, half boundaries). It uses leftmost-first semantics, and a reverse DFA finds where a match starts.
+- **PikeVM fallback.** It handles Unicode `\b` next to non-ASCII bytes and DFA cache thrash.
+- **Literal prefilters.** An exact-literal pattern needs no automaton at all. Otherwise the prefilter searches for a required literal by its rarest byte, or for a set of up to 3 rare bytes one of which every match contains (alternations, Unicode case folds). The searches use memchr / SSE2 memchr2 and memchr3.
+- **Unicode 16 tables.** They are generated by `tools/gen_unicode.cpp` from the UCD files into `src/regex/unicode_*.inc`.
 
-```
-brosearch/
-├── include/brosearch/
-│   ├── version.h              # Version macros & functions
-│   ├── cancellation_token.h   # Thread-safe cancellation token & source
-│   ├── fuzzy.h                # Fuzzy matcher & batch ranking
-│   ├── ignore.h               # Gitignore & glob pattern matcher
-│   ├── grep.h                 # File & buffer content search
-│   ├── finder.h               # Multithreaded file walker
-│   └── search.h               # Umbrella header
-├── src/
-│   ├── version.cpp
-│   ├── cancellation_token.cpp
-│   ├── fuzzy.cpp
-│   ├── ignore.cpp
-│   ├── grep.cpp
-│   └── finder.cpp
-└── tests/
-    ├── CMakeLists.txt
-    ├── test_smoke.cpp
-    ├── test_fuzzy.cpp
-    ├── test_grep.cpp
-    ├── test_ignore.cpp
-    └── test_finder.cpp
-```
-
----
-
-## Quick Example
-
-### Fuzzy Match
-```cpp
-#include <brosearch/search.h>
-#include <iostream>
-
-int main() {
-    auto res = bro::search::fuzzy_match("bf", "bro_finder.cpp");
-    if (res.matched) {
-        std::cout << "Score: " << res.score << "\n";
-        std::cout << "Matched indices: ";
-        for (auto idx : res.matched_indices) {
-            std::cout << idx << " ";
-        }
-        std::cout << "\n";
-    }
-}
-```
-
-### Content Grep
-```cpp
-#include <brosearch/search.h>
-#include <iostream>
-
-int main() {
-    bro::search::GrepOptions opts;
-    opts.case_sensitive = false;
-    auto res = bro::search::grep_file("src/main.cpp", "int main", opts);
-    for (const auto& match : res.matches) {
-        std::cout << match.line_number << ":" << match.column << ": " << match.line_content << "\n";
-    }
-}
-```
-
----
-
-## Building & Testing
+## Building and testing
 
 ```bash
-cmake -B build -S .
-cmake --build build --config Debug
-ctest --test-dir build -C Debug --output-on-failure
+cmake -B build && cmake --build build --config Release      # Windows (VS generator)
+ctest --test-dir build -C Release
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release   # Linux
+ctest --test-dir build-release
 ```
+
+The build options are `BROSEARCH_BUILD_TESTS` and `BROSEARCH_BUILD_TOOLS`. Both are ON when the
+project is built top-level.
+
+The ctest suites are `core`, `ignore`, `walk`, `fuzzy`, `fuzzy_index`, `regex` and `grep`. They
+carry oracle-derived expectations and do not need fzf, rg or git installed:
+
+- `tests/fixtures/fuzzy` holds fzf output.
+- `tests/fixtures/walk/*.spec` holds tree specs with the expected `rg --files` / git results.
+- `tests/fixtures/grep` holds 59 rg outputs over an adversarial corpus that the tests generate (`tests/grep_oracle.h`).
+
+### Live differential runners
+
+These scripts need the real tools. They drive `brosearch-cli` (`grep` / `files` / `fuzzy`
+subcommands, each speaking a subset of the reference tool's flags) on real trees:
+
+```bash
+scripts/diff_grep.sh  [--update] [--real DIR]... [--timing]   # vs rg; --update re-records fixtures
+scripts/diff_files.sh ...                                     # vs rg --files, git ls-files, git check-ignore
+scripts/diff_fuzzy.sh ...                                     # vs fzf --filter
+```
+
+## Known differences and gaps
+
+- **Grep and regex:**
+  - No `\p{Script}` properties.
+  - No `-U` multiline mode.
+  - `-c` on an explicitly named binary file (rg's convert mode) may count differently.
+  - The rg front end lives in `tests/grep_oracle.h`. It collects whole-file results, so output-heavy searches (hundreds of thousands of lines) are slower than rg's streaming printer.
+- **Ignore:** the library default is git's case behaviour (`CaseMode::Auto`), while rg always matches case-sensitively.

@@ -1,0 +1,100 @@
+# flags<TAB>query  (flags are fzf flags, space-separated; may be empty)
+	a
+	s
+	z
+	/
+	.
+	_
+	sr
+	sc
+	gl
+	te
+	src
+	cpp
+	hpp
+	ren
+	rend
+	rndr
+	webgl
+	scene
+	engin
+	render
+	shader
+	native
+	bronze
+	compositor
+	testsuite
+	physicsbody
+	srcrenderskia
+	docsapijs
+	Rend
+	WebGL
+	Scene
+	CMake
+	README
+	sRc
+	a b
+	scene node
+	src gl
+	src !test
+	!test
+	!.cpp !.h
+	cpp$
+	.h$
+	^src
+	^tests/
+	^docs api
+	'render
+	'skia'
+	'gl
+	!'xyz
+	^src/engine/engine.cpp$
+	render | scene
+	ab | cd | ef
+	render$ | scene
+	'webgl cpp$
+	^test 'js$
+	src\ re
+	 lead
+	trail
+	|
+	| a
+	a |
+	$
+	^
+	!
+	'
+	''
+	'a'
+	sc$ne
+-i	REND
++i	rend
++i	Rend
+-e	rend
+-e	'rend
+-e	ren der
+-e	^src cpp$
++x	src gl
++x	'render
+--literal	render
+--scheme=path	a
+--scheme=path	sc
+--scheme=path	rend
+--scheme=path	src/ren
+--scheme=path	enginecpp
+--scheme=path	gl
+--scheme=history	rend
+--scheme=history	sc
+--tiebreak=index	rend
+--tiebreak=begin	rend
+--tiebreak=end	rend
+--tiebreak=end	gl
+--tiebreak=chunk	rend
+--tiebreak=chunk,length	sc
+--tiebreak=pathname,length	sc
+--tiebreak=begin,end	re
+--tiebreak=length,begin	cpp
+--no-sort	rend
+--algo=v1	rend
+--algo=v1	scene
+--algo=v1	sc gl

@@ -1,0 +1,7 @@
+./plain.txt:4:foo_bar foo-bar foobar
+./words.txt:1:foo bar
+./words.txt:2:foobar
+./words.txt:3:barfoo
+./words.txt:4:foo_x
+./words.txt:6:fooé
+./words.txt:8:foo.bar

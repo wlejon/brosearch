@@ -1,0 +1,16 @@
+./binary_late.dat:1:llo
+./binary_late.dat: WARNING: stopped searching binary file after match (found "\0" byte around offset 70042)
+./bom8.txt:1:llo
+./latin1.txt:1:llo
+./latin1.txt:2:llo
+./latin1.txt:4:llo
+./longline.txt:2:llo
+./noeol.txt:1:llo
+./noeol.txt:3:llo
+./plain.txt:1:llo
+./plain.txt:2:llo
+./plain.txt:13:last line befo
+./sub/deep/nested.txt:1:llo
+./utf16be.txt:1:llo
+./utf16le.txt:1:llo
+./utf16le.txt:3:llo

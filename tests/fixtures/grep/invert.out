@@ -1,0 +1,22 @@
+./context.txt:2:two match
+./context.txt:4:four
+./context.txt:6:six match
+./crlf.txt:1:alpha
+./crlf.txt:4:
+./crlf.txt:5:gamma
+./plain.txt:3:HELLO
+./plain.txt:4:foo_bar foo-bar foobar
+./plain.txt:6:Σίσυφος σίσυφος
+./plain.txt:11:x-foo -foo #foo# a#foo
+./plain.txt:12:
+./sub/deep/nested.txt:2:nothing
+./tiny_bin1.dat:1:hi
+./tiny_bin1.dat: WARNING: stopped searching binary file after match (found "\0" byte around offset 8)
+./words.txt:1:foo bar
+./words.txt:2:foobar
+./words.txt:3:barfoo
+./words.txt:4:foo_x
+./words.txt:5:éfoo
+./words.txt:6:fooé
+./words.txt:7:(foo)
+./words.txt:8:foo.bar

@@ -1,0 +1,9 @@
+./binary_late.dat
+./bom8.txt
+./latin1.txt
+./longline.txt
+./noeol.txt
+./plain.txt
+./sub/deep/nested.txt
+./utf16be.txt
+./utf16le.txt

@@ -1,0 +1,10 @@
+./plain.txt:4:foo
+./plain.txt:11:foo
+./plain.txt:11:foo
+./plain.txt:11:foo
+./plain.txt:11:foo
+./words.txt:1:foo
+./words.txt:5:foo
+./words.txt:6:foo
+./words.txt:7:foo
+./words.txt:8:foo

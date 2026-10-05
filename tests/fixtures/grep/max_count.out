@@ -1,0 +1,9 @@
+./binary_late.dat:1:hello first
+./bom8.txt:1:hello bom
+./latin1.txt:1:café hello
+./longline.txt:2:short hello
+./noeol.txt:1:first hello
+./plain.txt:2:hello World
+./sub/deep/nested.txt:1:hello nested
+./utf16be.txt:1:hello big endian
+./utf16le.txt:1:hello utf16

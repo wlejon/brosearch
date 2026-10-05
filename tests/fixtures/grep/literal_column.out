@@ -1,0 +1,14 @@
+./binary_late.dat:1:1:hello first
+./binary_late.dat: WARNING: stopped searching binary file after match (found "\0" byte around offset 70042)
+./bom8.txt:1:1:hello bom
+./latin1.txt:1:6:café hello
+./latin1.txt:2:11:ÿþ broken hello
+./latin1.txt:4:12:Ã( bad seq hello
+./longline.txt:2:7:short hello
+./noeol.txt:1:7:first hello
+./noeol.txt:3:7:third hello
+./plain.txt:2:1:hello World
+./sub/deep/nested.txt:1:1:hello nested
+./utf16be.txt:1:1:hello big endian
+./utf16le.txt:1:1:hello utf16
+./utf16le.txt:3:12:ðŸ˜€ emoji hello

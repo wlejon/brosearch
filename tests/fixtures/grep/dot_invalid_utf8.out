@@ -1,0 +1,6 @@
+./latin1.txt:2:n hello
+./latin1.txt:4:q hello
+./longline.txt:2:t hello
+./noeol.txt:1:t hello
+./noeol.txt:3:d hello
+./utf16le.txt:3:i hello

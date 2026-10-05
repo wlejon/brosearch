@@ -1,0 +1,5 @@
+./context.txt:3
+./crlf.txt:3
+./plain.txt:5
+./sub/deep/nested.txt:1
+./words.txt:8
