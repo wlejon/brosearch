@@ -1,0 +1,61 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+# brosearch reads whatever is on disk: file contents of any encoding, ignore
+# files written by someone else, and patterns typed by a user. The regex
+# compiler, the UTF-8/UTF-16 decoders and the ignore-file parser all index
+# buffers by lengths that come out of that input, so out-of-bounds reads and
+# integer overflow in a size computation are the realistic bug, and they are
+# what the C++ queries look for.
+#
+# There is no vendored or sibling code to keep out of the database: every TU
+# the build compiles is brosearch's own. The Unicode tables in src/ are
+# generated, but they are data in .inc files and analysed where included.
+jobs:
+  analyze:
+    name: Analyze C++
+    runs-on: ubuntu-24.04
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: brosearch
+
+      - name: Install Ninja
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ninja-build
+
+      # Tests off: they are scaffolding, and alerts in them would only be
+      # noise. The CLI stays in: it is the library's front end.
+      - name: Configure
+        run: cmake -S brosearch -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBROSEARCH_BUILD_TESTS=OFF
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          source-root: brosearch
+          queries: security-extended
+
+      - name: Build brosearch (traced)
+        run: cmake --build build --parallel 4
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp

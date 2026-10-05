@@ -1,6 +1,8 @@
 # brosearch
 
-The search layer behind bro's file manager, launcher and terminal tools: fuzzy matching, file
+[![CI](https://github.com/wlejon/brosearch/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/brosearch/actions/workflows/ci.yml)
+
+The search layer behind [bro](https://github.com/wlejon/bro)'s file manager, launcher and terminal tools: fuzzy matching, file
 finding and content grep. It is a standalone C++20 library that needs only the standard library
 and threads. It does not depend on bro or bronze and has no JS binding. Everything lives in
 namespace `bro::search`, behind the umbrella header `<brosearch/search.h>`.
@@ -44,7 +46,8 @@ ctest --test-dir build-release
 ```
 
 The build options are `BROSEARCH_BUILD_TESTS` and `BROSEARCH_BUILD_TOOLS`. Both are ON when the
-project is built top-level.
+project is built top-level. To use the library from another CMake project, `add_subdirectory()` a
+checkout (setting both options OFF first) and link `brosearch::brosearch`.
 
 The ctest suites are `core`, `ignore`, `walk`, `fuzzy`, `fuzzy_index`, `regex` and `grep`. They
 carry oracle-derived expectations and do not need fzf, rg or git installed:
@@ -87,3 +90,9 @@ scripts/diff_fuzzy.sh ...                                     # vs fzf --filter
   same iconv `UTF-8-MAC` conversion git uses; `WalkEntry::native_path` keeps the stored bytes. rg never precomposes
   (`Precompose::Off`). The `*_darwin.spec` trees hold both oracles. APFS refuses non-UTF-8 names, so
   `nonutf8_posix.spec` is skipped there with the reason printed.
+
+## License
+
+MIT; see [LICENSE](LICENSE). The tables in `src/regex/unicode_*.inc` and
+`src/fuzzy/fuzzy_unicode_tables.inc` are generated from the Unicode Character Database, which is
+under the [Unicode License v3](https://www.unicode.org/license.txt).
