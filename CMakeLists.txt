@@ -68,7 +68,10 @@ if(BROSEARCH_BUILD_TOOLS)
 endif()
 
 # --- Standalone Bronze JavaScript API ---
-option(BROSEARCH_ENABLE_API "Build Bronze JavaScript API" ON)
+# On by default only when brosearch is the top-level project. A library that
+# consumes brosearch (bropty, bromux, ...) then never needs bronze checked out;
+# bro, the one consumer that wants the api, forces BROSEARCH_ENABLE_API ON.
+option(BROSEARCH_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROSEARCH_ENABLE_API)
     if(NOT TARGET bronze_runtime_shared)
         set(BRONZE_BUILD_SHARED_RUNTIME ON CACHE BOOL "" FORCE)

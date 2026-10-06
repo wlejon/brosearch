@@ -10,8 +10,20 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# brosearch has no sibling dependencies: the standard library and threads are
-# all it needs, so every job is a plain checkout, configure, build and ctest.
+# The library has no sibling dependencies: the standard library and threads
+# are all it needs. Its JavaScript api (brosearch_api, BROSEARCH_ENABLE_API,
+# on when brosearch is the top-level project) binds bronze, so every job lays
+# out bronze and brass beside the checkout with bronze's checkout-toolchain
+# action:
+#
+#     $GITHUB_WORKSPACE/
+#       brosearch/  <- this repo, checked out into a named path, not the root
+#       bronze/     <- the JavaScript runtime brosearch_api binds
+#       brass/      <- bronze's code generator
+#
+# bronze and brass compile inside this build tree with the job's own compiler
+# and CRT, which makes brosearch_test_api the check that the library works the
+# way bro uses it.
 #
 # The suites carry oracle-derived expectations (fzf, rg and git output recorded
 # under tests/fixtures/), so none of those tools has to be installed here. The
@@ -36,6 +48,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: brosearch
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install Ninja (Linux)
         if: runner.os == 'Linux'
@@ -85,6 +99,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: brosearch
+
+      - uses: wlejon/bronze/.github/actions/checkout-toolchain@main
 
       - name: Install gcovr + Ninja
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends gcovr ninja-build

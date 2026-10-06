@@ -294,7 +294,9 @@ int main() {
     write_file(tmp_dir / ".hidden.txt", "hidden file content\n");
     write_file(tmp_dir / ".gitignore", "*.log\n.hidden*\n");
 
-    std::string tmp_str = tmp_dir.string();
+    // Spliced into JS string literals below: forward slashes, so a Windows
+    // path's backslashes are not read as escapes ("C:\Users" -> "C:Users").
+    std::string tmp_str = tmp_dir.generic_string();
 
     // 9. Test filesSync
     {
