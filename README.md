@@ -2,67 +2,172 @@
 
 [![CI](https://github.com/wlejon/brosearch/actions/workflows/ci.yml/badge.svg)](https://github.com/wlejon/brosearch/actions/workflows/ci.yml)
 
-The search layer behind [bro](https://github.com/wlejon/bro)'s file manager, launcher and terminal tools: fuzzy matching, file
-finding and content grep. It is a standalone C++20 library that needs only the standard library
-and threads. It does not depend on bro or bronze and has no JS binding. Everything lives in
-namespace `bro::search`, behind the umbrella header `<brosearch/search.h>`.
+The search layer for fuzzy matching, file finding, and content grep. It is a
+standalone C++20 library requiring only the standard library and threads (no
+external dependencies). Everything lives in namespace `bro::search`, behind the
+umbrella header `<brosearch/search.h>`.
 
-The bar is agreement with the reference tools, which the test suite holds it to:
+In the [Bro ecosystem](https://github.com/wlejon/bro/blob/main/docs/ecosystem.md),
+brosearch sits in the terminal and engine layer:
+- [bropty](https://github.com/wlejon/bropty) uses it for linear-time regex scrollback search;
+- [brokeys](https://github.com/wlejon/brokeys) uses its automaton engine for regex `when` evaluation;
+- [bro](https://github.com/wlejon/bro) links it under `BRO_WITH_TERMINAL` and `BRO_WITH_KEYS` to power launcher, file manager, and terminal search.
 
+The bar is strict agreement with reference tools, validated by extensive differential suites:
 - **fuzzy** = `fzf --filter`
-- **finder** = `rg --files`, with `git ls-files` / `git check-ignore` as references
+- **finder** = `rg --files`, with `git ls-files` / `git check-ignore`
 - **grep** = `rg`
+
+## Platforms
+
+Platform support is verified in continuous integration across GCC, Clang, and MSVC:
+
+| Platform | Compiler | Path & Encoding Model | Case & Filesystem Semantics |
+|----------|----------|-----------------------|------------------------------|
+| **Linux** (x86-64, AArch64) | GCC 12+, Clang 16+ | Native UTF-8 POSIX paths | POSIX case-sensitive directory walking |
+| **Windows** (x86-64) | MSVC 2022+ | UTF-8 converted to wide strings (`std::wstring` / Win32 APIs) | NTFS case-insensitive semantics; POSIX permission specs skipped |
+| **macOS** (Apple Silicon, Intel) | Apple Clang | UTF-8 with optional `UTF-8-MAC` precomposition | Volume sensitivity via `pathconf(_PC_CASE_SENSITIVE)`; APFS skips non-UTF-8 names |
+
+### Platform-specific filesystem behaviors
+
+- **macOS Case Sensitivity**: Outside a git repository, `CaseMode::Auto` queries filesystem volume capabilities using `pathconf(_PC_CASE_SENSITIVE)`. Inside a repository, `core.ignorecase` governs.
+- **macOS Precomposition**: When `Precompose::Auto` is set (the default), directory walking inside a repository with `core.precomposeUnicode=true` (standard on macOS) matches and reports NFD names in NFC via iconv `UTF-8-MAC` conversion, while `WalkEntry::native_path` preserves the filesystem's raw bytes.
+- **APFS Encoding Skip**: APFS strictly rejects filenames containing invalid UTF-8 byte sequences. As a result, the `nonutf8_posix.spec` fixture test is skipped on APFS with the reason logged.
+- **Windows File Semantics**: Specs relying on POSIX-only filename characters (colons, trailing spaces/dots) or POSIX file modes are skipped on Windows.
 
 ## Modules
 
 | Header | What |
 |--------|------|
-| `fuzzy.h` | `FuzzyQuery` / `fuzzy_match` / `fuzzy_filter`: fzf's v2 algorithm (with its V1 fallback for long items) and fzf's extended query syntax (`'exact ^prefix suffix$ !not a\|b`), with smart case, Latin diacritic folding and fzf's default, path and history scoring schemes. Ranking and tie-breaks match fzf. `--nth` / `--delimiter` field matching and `--tac` are supported, and `fuzzy_display` renders items as fzf prints them (invalid UTF-8 as U+FFFD). Batch filtering is multithreaded and can be cancelled. |
-| `fuzzy_index.h` | `FuzzyIndex`: an append-only item store for incremental and streaming use. Searches run concurrently with `add()`, and a refined query only re-scans the matches cached from its prefix, as in fzf. Results always equal a cold search. |
-| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics, or rg's (`IgnoreDialect::Rg`, `rg_glob_match`: the ignore and globset crates). `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg; `Precompose::Auto` follows `core.precomposeUnicode` on macOS. |
-| `walk.h` | `walk` / `list_files`: a parallel directory walk with pruning. It honours `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, global excludes and parent-directory ignore files with rg's precedence, plus `-g` overrides. Nothing is ignored by default beyond what rg ignores. Unreadable directories are reported through `WalkOptions::on_error` (the CLI prints rg's messages and exits 2). |
-| `regex.h` | `Regex`: our own linear-time engine with Rust/rg syntax (see below). |
-| `grep.h` | `Grep`: rg-compatible line search over buffers, files, file lists and trees. Covers fixed strings, smart/insensitive case, `-w`/`-x`, invert, context lines, max count, `-U` multiline (with `--multiline-dotall`), UTF-8 and UTF-16 BOM decoding, binary detection (rg's quit/convert models), stats and prompt cancellation. Also has terminal helpers `detect_urls` / `detect_git_hashes`. |
-| `cancellation_token.h` | `CancellationSource` / `CancellationToken`, accepted by every long-running call. |
+| `fuzzy.h` | `FuzzyQuery` / `fuzzy_match` / `fuzzy_filter`: fzf's v2 algorithm (with v1 fallback for long items) and fzf's extended query syntax (`'exact ^prefix suffix$ !not a\|b`), with smart case, Latin diacritic folding and fzf's default, path and history scoring schemes. Ranking and tie-breaks match fzf. `--nth` / `--delimiter` field matching and `--tac` are supported, and `fuzzy_display` renders items as fzf prints them (invalid UTF-8 as U+FFFD). Batch filtering is multithreaded and cancellable. |
+| `fuzzy_index.h` | `FuzzyIndex`: an append-only item store for incremental and streaming use. Searches run concurrently with `add()`, and a refined query only re-scans matches cached from its prefix, matching fzf's incremental model. |
+| `ignore.h` | `Gitignore` / `IgnoreFilter` / `glob_match`: git wildmatch semantics or rg semantics (`IgnoreDialect::Rg`, `rg_glob_match`). `CaseMode::Auto` follows `core.ignorecase`, `Sensitive` matches rg; `Precompose::Auto` follows `core.precomposeUnicode` on macOS. |
+| `walk.h` | `walk` / `list_files`: parallel directory walking with pruning. Honours `.gitignore`, `.ignore`, `.rgignore`, `.git/info/exclude`, global excludes and parent-directory ignore files with ripgrep precedence, plus `-g` overrides. |
+| `regex.h` | `Regex`: linear-time regex engine with Rust/ripgrep syntax (see below). |
+| `grep.h` | `Grep`: ripgrep-compatible line search over buffers, files, and directory trees. Fixed strings, smart/insensitive case, `-w`/`-x`, invert, context lines, max count, `-U` multiline, UTF-8 and UTF-16 BOM decoding, binary detection, and terminal helpers `detect_urls` / `detect_git_hashes`. |
+| `cancellation_token.h` | `CancellationSource` / `CancellationToken`, accepted by all long-running searches. |
 
 ## Regex engine (`src/regex/`)
 
-It has no dependencies: RE2 would pull in abseil, and PCRE backtracks.
+brosearch contains its own linear-time regular expression engine without third-party dependencies:
+- **HIR compilation**: Unicode simple case folding, `\w`, `\d`, `\s`, general categories, scripts and script extensions (`\p{Greek}`, `\p{scx=Hira}`).
+- **Byte Thompson NFA**: UTF-8 range compilation for both forward and reverse programs.
+- **Lazy DFA**: States track preceding byte context classes for exact look-around (`^`, `$`, `\b`, `\B`). Uses leftmost-first matching and a reverse DFA to find start offsets.
+- **PikeVM fallback**: Handles Unicode `\b` next to non-ASCII bytes and DFA state thrashing.
+- **Literal prefilters**: Prefilters search for required literals using rarest-byte heuristics, SSE2 `memchr2`/`memchr3`, or memchr.
+- **Unicode 16 tables**: Generated by `tools/gen_unicode.cpp` from UCD files into `src/regex/unicode_*.inc`.
 
-- The parser goes straight to a HIR. Flags are applied there: Unicode simple case folding, `\w`, `\d`, `\s`, general categories, scripts and script extensions (`\p{Greek}`, `\p{scx=Hira}`), and the grep line terminator ban.
-- The HIR compiles to a byte-level Thompson NFA, with UTF-8 range compilation for both the forward and reverse programs.
-- **Lazy DFA.** Its states carry the previous byte's context class, so every look-around is exact (`^ $ \b \B`, half boundaries). It uses leftmost-first semantics, and a reverse DFA finds where a match starts.
-- **PikeVM fallback.** It handles Unicode `\b` next to non-ASCII bytes and DFA cache thrash.
-- **Literal prefilters.** An exact-literal pattern needs no automaton at all. Otherwise the prefilter searches for a required literal by its rarest byte, or for a set of up to 3 rare bytes one of which every match contains (alternations, Unicode case folds). The searches use memchr / SSE2 memchr2 and memchr3.
-- **Unicode 16 tables.** They are generated by `tools/gen_unicode.cpp` from the UCD files into `src/regex/unicode_*.inc`.
+## Building and embedding
 
-## Building and testing
+### Standalone build
 
 ```bash
-cmake -B build && cmake --build build --config Release      # Windows (VS generator)
-ctest --test-dir build -C Release
-cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build-release   # Linux, macOS
-ctest --test-dir build-release
+# Linux / macOS (Ninja)
+cmake -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
+
+# Windows (MSVC / Visual Studio 2022)
+cmake -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-The build options are `BROSEARCH_BUILD_TESTS` and `BROSEARCH_BUILD_TOOLS`. Both are ON when the
-project is built top-level. To use the library from another CMake project, `add_subdirectory()` a
-checkout (setting both options OFF first) and link `brosearch::brosearch`.
+The build produces:
+- `brosearch`: Static library (CMake target `brosearch::brosearch` or `brosearch`).
+- `brosearch_cli`: Command-line interface executable (binary named `brosearch`).
 
-The ctest suites are `core`, `ignore`, `walk`, `fuzzy`, `fuzzy_index`, `regex` and `grep`. They
-carry oracle-derived expectations and do not need fzf, rg or git installed:
+### Embedding in a CMake project
 
-- `tests/fixtures/fuzzy` holds fzf output.
-- `tests/fixtures/walk/*.spec` holds tree specs with the expected `rg --files` / git results.
-- `tests/fixtures/grep` holds 107 rg outputs over an adversarial corpus that the tests generate (`tests/grep_oracle.h`).
+Consumers embed brosearch in either a sibling or submodule layout:
+- **Sibling layout:** `../brosearch` beside the consumer project.
+- **Submodule layout:** `third_party/brosearch` within the consumer project.
+
+In your `CMakeLists.txt`:
+
+```cmake
+# When vendoring under third_party/:
+add_subdirectory(third_party/brosearch)
+
+target_link_libraries(my_tool PRIVATE brosearch::brosearch)
+```
+
+Configuration options:
+- `BROSEARCH_BUILD_TESTS`: Build ctest test suite (default `ON` when top-level, `OFF` when embedded via `add_subdirectory`).
+- `BROSEARCH_BUILD_TOOLS`: Build `brosearch` CLI executable (default `ON` when top-level, `OFF` when embedded via `add_subdirectory`).
+- `BROSEARCH_COVERAGE`: Build with gcov coverage instrumentation on GCC/Clang (default `OFF`).
+
+## API overview
+
+```cpp
+#include <brosearch/search.h>
+#include <iostream>
+
+using namespace bro::search;
+
+int main() {
+    // 1. Fuzzy matching (fzf v2 algorithm)
+    FuzzyQuery query("doc");
+    std::string item = "document_parser.cpp";
+    FuzzyMatch match;
+    if (query.match(item, match)) {
+        std::cout << "Matched '" << item << "' with score: " << match.score << "\n";
+    }
+
+    // 2. Linear-time regex search
+    Regex re("fn\\s+[a-z_]+", RegexOptions::Default);
+    std::string text = "fn parse_tokens() -> bool";
+    Match m;
+    if (re.find(text, m)) {
+        std::cout << "Found match: " << text.substr(m.start, m.length()) << "\n";
+    }
+
+    // 3. Ripgrep-compatible directory walking with .gitignore
+    WalkOptions opts;
+    opts.threads = 4;
+    walk(".", opts, [](const WalkEntry& entry) {
+        if (!entry.is_dir) {
+            std::cout << entry.path << "\n";
+        }
+        return WalkAction::Continue;
+    });
+}
+```
+
+## Tests
+
+Every test is a real ctest executable that catches invariant violations in Release builds (no reliance on `assert()`).
+
+### Test breakdown
+
+| Suite | Focus |
+|-------|-------|
+| `core` | Basic string utilities, UTF-8 decoding, cancellation tokens |
+| `ignore` | Git wildmatch and ripgrep glob dialects, parent ignore inheritance, case mode switching |
+| `walk` | Multithreaded directory walking, ignore rule precedence, hidden file rules, error callbacks |
+| `fuzzy` | fzf scoring parity, extended search syntax (`^prefix`, `'exact`, `suffix$`, `!invert`), tie-breaks |
+| `fuzzy_index` | Incremental item store concurrency, prefix match cache reuse, streaming additions |
+| `regex` | HIR compilation, DFA look-around transitions, PikeVM fallback, Unicode 16 character classes |
+| `grep` | Line search, context lines, multi-line patterns, binary file detection, BOM handling |
+
+Test suites validate expectations against checked-in oracle fixtures (`tests/fixtures/`):
+- `tests/fixtures/fuzzy/`: Recorded `fzf` output.
+- `tests/fixtures/walk/*.spec`: Tree specifications with expected `rg --files` and `git` results.
+- `tests/fixtures/grep/`: 107 ripgrep reference outputs across an adversarial corpus generated by `tests/grep_oracle.h`.
+
+Because test fixtures are bundled, external installations of `fzf`, `rg`, or `git` are **not required** to run CI test jobs.
+
+### CI skips
+
+- **`nonutf8_posix.spec`**: Skipped on macOS / APFS because APFS rejects filenames with invalid UTF-8 bytes.
+- **POSIX-only tree specs**: Skipped on Windows when specs require POSIX permission bits or characters not valid in NTFS filenames.
 
 ### Live differential runners
 
-These scripts need the real tools. They drive `brosearch-cli` (`grep` / `files` / `fuzzy`
-subcommands, each speaking a subset of the reference tool's flags) on real trees:
+Developers can run live differential tests against real external tools installed on their system:
 
 ```bash
-scripts/diff_grep.sh  [--update] [--real DIR]... [--timing]   # vs rg; --update re-records fixtures
+scripts/diff_grep.sh  [--update] [--real DIR]... [--timing]   # vs ripgrep; --update re-records fixtures
 scripts/diff_files.sh ...                                     # vs rg --files, git ls-files, git check-ignore
 scripts/diff_fuzzy.sh ...                                     # vs fzf --filter
 ```
@@ -70,29 +175,15 @@ scripts/diff_fuzzy.sh ...                                     # vs fzf --filter
 ## Known differences and gaps
 
 - **Grep and regex:**
-  - Explicitly named files follow rg's `--no-mmap` path. rg memory-maps a handful of explicitly named files on
-    Windows and Linux (never on macOS), and its mmap path handles binary data differently; the `explicit_*`
-    fixtures pass `--no-mmap`.
+  - Explicitly named files follow rg's `--no-mmap` path. rg memory-maps a small number of explicitly named files on Windows and Linux (never on macOS), and its mmap path handles binary data differently; the `explicit_*` fixtures pass `--no-mmap`.
   - The rg front end lives in `tests/grep_oracle.h`. It collects whole-file results, so output-heavy searches (hundreds of thousands of lines) are slower than rg's streaming printer.
-- **Fuzzy:** the tables are Unicode 16. fzf 0.74.4 is built with Go 1.25.6, whose tables are still Unicode 15.0.0, so
-  case folding of code points new in Unicode 16 can differ from fzf.
-- **Ignore:** the library default is git's case behaviour (`CaseMode::Auto`), while rg always matches case-sensitively.
-  Outside a repository, `Auto` on macOS asks the volume (`pathconf(_PC_CASE_SENSITIVE)`).
-  - `IgnoreDialect::Git` (the default) reads ignore files and globs as git does; `IgnoreDialect::Rg` as rg 15
-    does (trailing tabs trimmed, globset classes and `{a,b}`, anchoring of global excludes / `--ignore-file` /
-    `-g` at the path rg prints; see `ignore.h` and `WalkOptions::dialect`). The `rg_*.spec` trees hold rg's
-    output. Older rg releases differ (rg 13/14 reject nested `{}` and unclosed `[`, and drop an ignore file
-    with invalid UTF-8 entirely), so run `scripts/diff_files.sh` against rg 15.
-  - rg 15.2 on Windows never matches a `-g` glob with a leading `/`; this is not reproduced (rg on macOS and
-    Linux anchors it at the root, as we do).
-- **macOS names:** with `Precompose::Auto` (the default) a walk inside a repository with
-  `core.precomposeUnicode=true` (what `git init` writes on macOS) matches and reports NFD names in NFC, through the
-  same iconv `UTF-8-MAC` conversion git uses; `WalkEntry::native_path` keeps the stored bytes. rg never precomposes
-  (`Precompose::Off`). The `*_darwin.spec` trees hold both oracles. APFS refuses non-UTF-8 names, so
-  `nonutf8_posix.spec` is skipped there with the reason printed.
+- **Fuzzy:** Tables are Unicode 16. fzf 0.74.4 uses Go 1.25.6, whose tables are Unicode 15.0.0; case folding for code points added in Unicode 16 can differ from fzf.
+- **Ignore:** Default dialect is git's case behavior (`CaseMode::Auto`), whereas rg always matches case-sensitively. Outside a git repository, `Auto` on macOS queries `pathconf(_PC_CASE_SENSITIVE)`.
+  - `IgnoreDialect::Git` (default) reads ignore files as git does; `IgnoreDialect::Rg` follows rg 15 (trailing tabs trimmed, globset `{a,b}`, global exclude anchoring). Older rg releases differ.
+  - rg 15.2 on Windows does not match a `-g` glob with a leading `/`; brosearch follows POSIX rg behavior and anchors it at the root.
 
 ## License
 
-MIT; see [LICENSE](LICENSE). The tables in `src/regex/unicode_*.inc` and
-`src/fuzzy/fuzzy_unicode_tables.inc` are generated from the Unicode Character Database, which is
-under the [Unicode License v3](https://www.unicode.org/license.txt).
+MIT; see [LICENSE](LICENSE). Tables in `src/regex/unicode_*.inc` and
+`src/fuzzy/fuzzy_unicode_tables.inc` are generated from the Unicode Character
+Database ([Unicode License v3](https://www.unicode.org/license.txt)).
