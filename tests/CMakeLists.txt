@@ -3,6 +3,8 @@
 file(GLOB BROSEARCH_TEST_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 list(FILTER BROSEARCH_TEST_SOURCES EXCLUDE REGEX ".*test_.*api.*")
+# Attached to every test executable at the end of this file instead.
+list(FILTER BROSEARCH_TEST_SOURCES EXCLUDE REGEX ".*/no_dialogs\\.cpp$")
 
 add_executable(brosearch_tests ${BROSEARCH_TEST_SOURCES})
 target_link_libraries(brosearch_tests PRIVATE brosearch)
@@ -76,5 +78,16 @@ if(BROSEARCH_ENABLE_API)
                 ENVIRONMENT "PATH=$<TARGET_FILE_DIR:bronze_runtime_shared>;$<TARGET_FILE_DIR:brosearch_test_api>;$ENV{PATH}")
         endif()
     endif()
+endif()
+
+# Every test executable links no_dialogs.cpp (see the file).
+if(WIN32)
+    get_property(_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_t IN LISTS _test_targets)
+        get_target_property(_type ${_t} TYPE)
+        if(_type STREQUAL "EXECUTABLE")
+            target_sources(${_t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/no_dialogs.cpp)
+        endif()
+    endforeach()
 endif()
 

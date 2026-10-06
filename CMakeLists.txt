@@ -28,9 +28,11 @@ if(MSVC)
         $<$<COMPILE_LANGUAGE:CXX>:/W4>
         $<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>
     )
-    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    endif()
+    # The CRT stays CMake's default, the DLL one (/MD, /MDd), as in bro. The
+    # api's test links bronze_runtime_shared.dll, and objects allocated on one
+    # side of that boundary are freed on the other: with the static CRT every
+    # module has its own heap, so that is a cross-heap free (in Debug, the
+    # CRT's __acrt_first_block == header assert).
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
