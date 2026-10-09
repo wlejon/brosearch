@@ -13,7 +13,7 @@ concurrency:
 # The library has no sibling dependencies: the standard library and threads
 # are all it needs. Its JavaScript api (brosearch_api, BROSEARCH_ENABLE_API,
 # on when brosearch is the top-level project) binds bronze, which, with brass,
-# comes from the commit CMakeLists.txt pins (cmake/bro_deps.cmake), fetched at
+# comes from the head of its main branch (cmake/bro_deps.cmake), fetched at
 # configure: every job builds a plain clone. bronze and brass compile inside
 # this build tree with the job's own compiler and CRT, which makes brosearch_test_api the check that the library works the
 # way bro uses it.
