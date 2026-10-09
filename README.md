@@ -77,17 +77,21 @@ The build produces:
 - `brosearch`: Static library (CMake target `brosearch::brosearch` or `brosearch`).
 - `brosearch_cli`: Command-line interface executable (binary named `brosearch`).
 
+A plain `git clone` is enough: there are no submodules. The library itself needs nothing beyond
+the standard library; its JavaScript binding (`BROSEARCH_ENABLE_API`, on when brosearch is the
+top-level project) needs [bronze](https://github.com/wlejon/bronze) and, through it,
+[brass](https://github.com/wlejon/brass). They resolve the way every repo in the ecosystem
+resolves a dependency (`cmake/bro_deps.cmake`): an existing target, then a working tree at
+`../<name>`, then the commit `CMakeLists.txt` pins, fetched at configure (override with
+`-DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>`).
+
 ### Embedding in a CMake project
 
-Consumers embed brosearch in either a sibling or submodule layout:
-- **Sibling layout:** `../brosearch` beside the consumer project.
-- **Submodule layout:** `third_party/brosearch` within the consumer project.
-
-In your `CMakeLists.txt`:
+Bro-ecosystem consumers pin brosearch with `bro_dependency(brosearch ...)`, which takes a
+`../brosearch` working tree when there is one. Any other project can add it directly:
 
 ```cmake
-# When vendoring under third_party/:
-add_subdirectory(third_party/brosearch)
+add_subdirectory(path/to/brosearch)
 
 target_link_libraries(my_tool PRIVATE brosearch::brosearch)
 ```
