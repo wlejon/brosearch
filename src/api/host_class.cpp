@@ -43,12 +43,14 @@ void HostClass::install(const char* name, uint32_t arity, ev::NativeFn body,
 
     Slots& s = slots();
     ev::Persistent ctor(ev::makeFunction(std::move(ctorBody), arity, name));
+    delete s.ctor;
     s.ctor = new ev::Persistent(ctor.get());
 
     {
         ObjectBuilder proto(ev::getProperty(ctor.get(), "prototype"));
         proto.set("constructor", ctor.get());
         if (decorate) decorate(proto);
+        delete s.proto;
         s.proto = new ev::Persistent(proto.get());
     }
 

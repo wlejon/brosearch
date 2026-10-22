@@ -78,7 +78,8 @@ static bro::search::WalkOptions parseGrepWalkOptions(Value optVal) {
         w.hidden = ev::toBool(hidVal);
     }
 
-    Value fpVal = ev::getProperty(opt.get(), "filePattern");
+    ev::HandleScope scope;
+    ev::Local fpVal(scope, ev::getProperty(opt.get(), "filePattern"));
     if (ev::isString(fpVal)) {
         w.globs.push_back(ev::toUtf8(fpVal));
     } else if (ev::isObject(fpVal)) {
@@ -92,7 +93,7 @@ static bro::search::WalkOptions parseGrepWalkOptions(Value optVal) {
         }
     }
 
-    Value globsVal = ev::getProperty(opt.get(), "globs");
+    ev::Local globsVal(scope, ev::getProperty(opt.get(), "globs"));
     if (ev::isObject(globsVal)) {
         Value lenVal = ev::getProperty(globsVal, "length");
         if (ev::isNumber(lenVal)) {

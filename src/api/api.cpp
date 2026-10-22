@@ -36,46 +36,58 @@ void trackAsyncJob(std::shared_ptr<AsyncJob> job) {
     t_jobs.push_back(std::move(job));
 }
 
+static bool drainJobStream(AsyncJob& job) {
+    if (!ev::isFunction(job.callback.get())) return false;
+
+    bool did_work = false;
+    if (!job.is_grep) {
+        std::vector<std::string> batch;
+        {
+            std::lock_guard<std::mutex> lk(job.stream_files_mu);
+            batch.swap(job.stream_files);
+        }
+        if (!batch.empty()) {
+            did_work = true;
+            for (const auto& path : batch) {
+                if (!ev::isFunction(job.callback.get())) break;
+                ev::Persistent s(ev::fromUtf8(path));
+                const Value arg = s.get();
+                ev::call(job.callback.get(), ev::undefined(), std::span<const Value>(&arg, 1));
+            }
+        }
+    } else {
+        std::vector<AsyncJob::Hit> batch;
+        {
+            std::lock_guard<std::mutex> lk(job.stream_grep_mu);
+            batch.swap(job.stream_grep);
+        }
+        if (!batch.empty()) {
+            did_work = true;
+            for (const auto& h : batch) {
+                if (!ev::isFunction(job.callback.get())) break;
+                ObjectBuilder hb;
+                hb.set("path", h.path);
+                hb.set("line", static_cast<double>(h.line));
+                hb.set("column", static_cast<double>(h.column));
+                hb.set("text", h.text);
+                const Value arg = hb.get();
+                ev::call(job.callback.get(), ev::undefined(), std::span<const Value>(&arg, 1));
+            }
+        }
+    }
+    return did_work;
+}
+
 bool drainAsyncJobs() {
     bool did_work = false;
     if (t_jobs.empty()) return false;
 
-    // 1. Drain streaming callbacks on JS thread
-    for (auto& job : t_jobs) {
-        if (!ev::isFunction(job->callback.get())) continue;
-
-        if (!job->is_grep) {
-            std::vector<std::string> batch;
-            {
-                std::lock_guard<std::mutex> lk(job->stream_files_mu);
-                batch.swap(job->stream_files);
-            }
-            if (!batch.empty()) {
-                did_work = true;
-                for (const auto& path : batch) {
-                    ev::Persistent s(ev::fromUtf8(path));
-                    const Value arg = s.get();
-                    ev::call(job->callback.get(), ev::undefined(), std::span<const Value>(&arg, 1));
-                }
-            }
-        } else {
-            std::vector<AsyncJob::Hit> batch;
-            {
-                std::lock_guard<std::mutex> lk(job->stream_grep_mu);
-                batch.swap(job->stream_grep);
-            }
-            if (!batch.empty()) {
-                did_work = true;
-                for (const auto& h : batch) {
-                    ObjectBuilder hb;
-                    hb.set("path", h.path);
-                    hb.set("line", static_cast<double>(h.line));
-                    hb.set("column", static_cast<double>(h.column));
-                    hb.set("text", h.text);
-                    const Value arg = hb.get();
-                    ev::call(job->callback.get(), ev::undefined(), std::span<const Value>(&arg, 1));
-                }
-            }
+    // 1. Drain streaming callbacks on JS thread over a snapshot so re-entrant
+    // trackAsyncJob() / cancelAllAsyncJobs() calls cannot invalidate iterators.
+    std::vector<std::shared_ptr<AsyncJob>> snapshot = t_jobs;
+    for (auto& job : snapshot) {
+        if (drainJobStream(*job)) {
+            did_work = true;
         }
     }
 
@@ -97,6 +109,9 @@ bool drainAsyncJobs() {
             job->worker.join();
         }
         did_work = true;
+
+        // Drain any remaining streaming items produced after Step 1 before resolving.
+        drainJobStream(*job);
 
         if (!job->error.empty()) {
             ev::Persistent err(makeError(job->error));
@@ -128,17 +143,19 @@ bool drainAsyncJobs() {
 }
 
 void cancelAllAsyncJobs() {
-    for (auto& job : t_jobs) {
+    std::vector<std::shared_ptr<AsyncJob>> jobs;
+    jobs.swap(t_jobs);
+    for (auto& job : jobs) {
         if (job->cancel_token) {
             job->cancel_token->cancel();
         }
+        job->callback.set(ev::undefined());
     }
-    for (auto& job : t_jobs) {
+    for (auto& job : jobs) {
         if (job->worker.joinable()) {
             job->worker.join();
         }
     }
-    t_jobs.clear();
 }
 
 static Value ensureBroSearch() {

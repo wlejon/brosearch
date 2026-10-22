@@ -460,6 +460,75 @@ int main() {
         CHECK_EQ(ev::toUtf8(res.value), "OK");
     }
 
+    // 13. Test async streaming callbacks (onFile / onMatch) on completed jobs + re-entrant job spawning + re-install
+    {
+        std::cout << "Testing async streaming callbacks and re-entrant job spawning..." << std::endl;
+        brosearch::api::installSearch();
+        std::string launch = R"JS(
+            (function(root) {
+                globalThis.__stream_test = {
+                    filesStreamed: [],
+                    filesResolved: null,
+                    reentrantResolved: null,
+                    grepStreamed: [],
+                    grepResolved: null,
+                    error: null
+                };
+                const st = globalThis.__stream_test;
+                bro.search.files(root, {
+                    onFile: (p) => {
+                        st.filesStreamed.push(p);
+                        if (st.filesStreamed.length === 1) {
+                            bro.search.files(root).then((r2) => { st.reentrantResolved = r2; });
+                        }
+                    }
+                }).then(
+                    (res) => { st.filesResolved = res; },
+                    (err) => { st.error = String(err); }
+                );
+                bro.search.grep(root, "return \\d+", {
+                    onMatch: (h) => { st.grepStreamed.push(h); }
+                }).then(
+                    (res) => { st.grepResolved = res; },
+                    (err) => { st.error = String(err); }
+                );
+                return "LAUNCHED";
+            })(")JS" + tmp_str + R"JS(")
+        )JS";
+        auto res = evalScript(launch);
+        CHECK(!res.thrown);
+
+        // Wait until worker threads finish before pumping once to ensure Step 2 drains final stream items
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        pumpAsync(100);
+
+        const char* checkScript = R"JS(
+            (function() {
+                const st = globalThis.__stream_test;
+                if (st.error) throw new Error("stream test error: " + st.error);
+                if (!st.filesResolved || !st.grepResolved || !st.reentrantResolved) {
+                    throw new Error("promises did not resolve");
+                }
+                if (st.filesStreamed.length !== st.filesResolved.length) {
+                    throw new Error("filesStreamed count (" + st.filesStreamed.length + ") !== filesResolved count (" + st.filesResolved.length + ")");
+                }
+                if (st.grepStreamed.length !== st.grepResolved.length) {
+                    throw new Error("grepStreamed count (" + st.grepStreamed.length + ") !== grepResolved count (" + st.grepResolved.length + ")");
+                }
+                if (st.reentrantResolved.length !== st.filesResolved.length) {
+                    throw new Error("reentrantResolved count mismatch");
+                }
+                return "OK";
+            })()
+        )JS";
+        res = evalScript(checkScript);
+        if (res.thrown) {
+            std::cerr << "async streaming test failed: " << ev::toUtf8(res.value) << std::endl;
+            std::exit(1);
+        }
+        CHECK_EQ(ev::toUtf8(res.value), "OK");
+    }
+
     // Cleanup temp directory
     std::error_code ec;
     std::filesystem::remove_all(tmp_dir, ec);

@@ -42,7 +42,8 @@ static bro::search::WalkOptions parseWalkOptions(Value optVal) {
     if (!ev::isUndefined(dirsVal)) {
         o.yield_directories = ev::toBool(dirsVal);
     }
-    Value globsVal = ev::getProperty(opt.get(), "globs");
+    ev::HandleScope scope;
+    ev::Local globsVal(scope, ev::getProperty(opt.get(), "globs"));
     if (ev::isObject(globsVal)) {
         Value lenVal = ev::getProperty(globsVal, "length");
         if (ev::isNumber(lenVal)) {

@@ -96,7 +96,8 @@ static Value js_fuzzy(Value, std::span<const Value> args) {
     items.reserve(count);
 
     for (uint32_t i = 0; i < count; ++i) {
-        Value elem = ev::getElement(candP.get(), i);
+        ev::HandleScope scope;
+        ev::Local elem(scope, ev::getElement(candP.get(), i));
         if (ev::isString(elem)) {
             items.push_back(ev::toUtf8(elem));
         } else if (ev::isObject(elem)) {
@@ -104,7 +105,7 @@ static Value js_fuzzy(Value, std::span<const Value> args) {
                 Value v = ev::getProperty(elem, keyProp);
                 items.push_back(ev::isString(v) ? ev::toUtf8(v) : "");
             } else if (ev::isFunction(keyFn.get())) {
-                const Value arg = elem;
+                const Value arg = elem.get();
                 auto callRes = ev::call(keyFn.get(), candP.get(), std::span<const Value>(&arg, 1));
                 items.push_back((!callRes.thrown && ev::isString(callRes.value)) ? ev::toUtf8(callRes.value) : "");
             } else {
