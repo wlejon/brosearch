@@ -7,10 +7,11 @@ list(FILTER BROSEARCH_TEST_SOURCES EXCLUDE REGEX ".*test_.*api.*")
 list(FILTER BROSEARCH_TEST_SOURCES EXCLUDE REGEX ".*/no_dialogs\\.cpp$")
 
 add_executable(brosearch_tests ${BROSEARCH_TEST_SOURCES})
-target_link_libraries(brosearch_tests PRIVATE brosearch)
+target_link_libraries(brosearch_tests PRIVATE brosearch brass)
 target_include_directories(brosearch_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    ${brass_SOURCE_DIR}/include)
 target_compile_definitions(brosearch_tests PRIVATE
     BROSEARCH_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 if(MSVC)

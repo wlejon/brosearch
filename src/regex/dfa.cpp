@@ -1,5 +1,6 @@
 #include "regex/dfa.h"
 
+#include "regex/dfa_jit.h"
 #include "regex/unicode.h"
 
 #include <cstring>
@@ -186,7 +187,24 @@ SearchResult LazyDfa::forward(const uint8_t* data, size_t len, size_t start, siz
     size_t last = kNone;
     const uint8_t* cls = prog_.byte_class.data();
     const uint32_t* tab = table_.data();
-    for (size_t i = start; i < end; ++i) {
+    const DfaForwardScanJitFn jit_forward = jit_enabled_ ? DfaJit::forwardScanFn() : nullptr;
+    size_t i = start;
+    while (i < end) {
+        if (jit_forward) {
+            int64_t io_state[3] = {
+                static_cast<int64_t>(i),
+                static_cast<int64_t>(off),
+                static_cast<int64_t>(last),
+            };
+            const int64_t rc = jit_forward(
+                tab, cls, data, static_cast<int64_t>(end), earliest ? 1 : 0, io_state);
+            i = static_cast<size_t>(io_state[0]);
+            off = static_cast<uint32_t>(io_state[1]);
+            last = static_cast<size_t>(io_state[2]);
+            if (rc == 0) break;
+            if (rc == 3) return {SearchStatus::Match, last};
+            if (rc == 2) return last != kNone ? SearchResult{SearchStatus::Match, last} : SearchResult{};
+        }
         const uint8_t b = data[i];
         uint32_t e = tab[off + cls[b]];
         if (e == kUnknown) {
@@ -201,6 +219,7 @@ SearchResult LazyDfa::forward(const uint8_t* data, size_t len, size_t start, siz
             if (earliest) return {SearchStatus::Match, i};
         }
         off = e >> 1;
+        ++i;
         if (off == kDead) return last != kNone ? SearchResult{SearchStatus::Match, last} : SearchResult{};
     }
     int after = end < len ? data[end] : -1;
@@ -226,7 +245,23 @@ SearchResult LazyDfa::reverse(const uint8_t* data, size_t len, size_t start, siz
     size_t best = kNone;
     const uint8_t* cls = prog_.byte_class.data();
     const uint32_t* tab = table_.data();
-    for (size_t i = end; i > start; --i) {
+    const DfaReverseScanJitFn jit_reverse = jit_enabled_ ? DfaJit::reverseScanFn() : nullptr;
+    size_t i = end;
+    while (i > start) {
+        if (jit_reverse) {
+            int64_t io_state[3] = {
+                static_cast<int64_t>(i),
+                static_cast<int64_t>(off),
+                static_cast<int64_t>(best),
+            };
+            const int64_t rc = jit_reverse(
+                tab, cls, data, static_cast<int64_t>(start), io_state);
+            i = static_cast<size_t>(io_state[0]);
+            off = static_cast<uint32_t>(io_state[1]);
+            best = static_cast<size_t>(io_state[2]);
+            if (rc == 0) break;
+            if (rc == 2) return best != kNone ? SearchResult{SearchStatus::Match, best} : SearchResult{};
+        }
         const uint8_t b = data[i - 1];
         uint32_t e = tab[off + cls[b]];
         if (e == kUnknown) {
@@ -238,6 +273,7 @@ SearchResult LazyDfa::reverse(const uint8_t* data, size_t len, size_t start, siz
         }
         if (e & 1u) best = i;
         off = e >> 1;
+        --i;
         if (off == kDead) return best != kNone ? SearchResult{SearchStatus::Match, best} : SearchResult{};
     }
     int before = start > 0 ? data[start - 1] : -1;

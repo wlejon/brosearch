@@ -1,11 +1,15 @@
 #include "harness.h"
 
 #include "brosearch/regex.h"
+#include "regex/dfa_jit.h"
 #include "regex/literal.h"
 #include "regex/matcher.h"
 #include "regex/pikevm.h"
 
+#include <brass/verify/smt_equiv.hpp>
+
 #include <chrono>
+#include <iostream>
 #include <random>
 
 using namespace bro::search;
@@ -382,4 +386,100 @@ TEST(regex, literal_finder_matches_naive_search) {
         ++checked;
     }
     CHECK(checked == 6000);
+}
+
+TEST(regex, brass_dfa_jit_equivalence_and_speedup) {
+    CHECK(rx::DfaJit::isAvailable());
+    const auto& stats = rx::DfaJit::stats();
+    CHECK(stats.superopt_masks_elided >= 1);
+
+    // 1. Formal SMT equivalence verification between unoptimized and superoptimized MIR
+    auto unopt_mod = rx::DfaJit::buildMirModule();
+    auto opt_mod = rx::DfaJit::buildMirModule();
+    brass::SmtGuardElimStats guard_stats{};
+    brass::SuperoptStats superopt_stats{};
+    rx::DfaJit::optimizeMirModule(*opt_mod, &guard_stats, &superopt_stats);
+    CHECK(superopt_stats.masks_elided >= 1);
+
+    brass::verify::EquivOptions eq_opts;
+    eq_opts.loop_unroll_bound = 0;
+
+    const char* proven_fns[] = {
+        "brosearch_dfa_table_step",
+        "brosearch_dfa_scan_bytes",
+        "brosearch_dfa_step",
+    };
+    for (const char* fn_name : proven_fns) {
+        const brass::Function* f_unopt = unopt_mod->get_function(fn_name);
+        const brass::Function* f_opt = opt_mod->get_function(fn_name);
+        CHECK(f_unopt != nullptr);
+        CHECK(f_opt != nullptr);
+        if (f_unopt && f_opt) {
+            auto eq = brass::verify::verify_mir_equivalence(*f_unopt, *f_opt, eq_opts);
+            CHECK_MSG(eq.status == brass::verify::EquivStatus::ProvenEquivalent,
+                      "Function " << fn_name << " diagnostic: " << eq.diagnostic);
+        }
+    }
+
+    const char* loop_fns[] = {
+        "brosearch_dfa_forward_scan",
+        "brosearch_dfa_reverse_scan",
+    };
+    for (const char* fn_name : loop_fns) {
+        const brass::Function* f_unopt = unopt_mod->get_function(fn_name);
+        const brass::Function* f_opt = opt_mod->get_function(fn_name);
+        CHECK(f_unopt != nullptr);
+        CHECK(f_opt != nullptr);
+        if (f_unopt && f_opt) {
+            auto eq = brass::verify::verify_mir_equivalence(*f_unopt, *f_opt, eq_opts);
+            CHECK(!eq.is_counterexample());
+            CHECK(eq.status != brass::verify::EquivStatus::Unsupported);
+        }
+    }
+
+    // 2. Differential equivalence between JIT-enabled LazyDfa and scalar LazyDfa
+    const char* patterns[] = {
+        "[a-z]{3,8}_[0-9]{2,5}|foo[0-9]+bar",
+        "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+        "(?i)error|warning|critical",
+        "^\\s*#include\\s+<[^>]+>",
+    };
+    std::string corpus = "alpha_12 beta_3456 gamma_789 #include <vector>\n"
+                         "some ERROR and Warning text with foo98765bar at the end\n";
+    const auto* raw = reinterpret_cast<const uint8_t*>(corpus.data());
+    const size_t len = corpus.size();
+
+    for (const char* pat : patterns) {
+        RegexOptions o;
+        o.multi_line = true;
+        auto re = Regex::compile(pat, o);
+        CHECK(re != nullptr);
+        if (!re) continue;
+
+        rx::LazyDfa dfa_jit(re->matcher().forward(), true);
+        rx::LazyDfa dfa_scalar(re->matcher().forward(), true);
+        dfa_jit.set_jit_enabled(true);
+        dfa_scalar.set_jit_enabled(false);
+
+        rx::LazyDfa rev_jit(re->matcher().reverse(), false);
+        rx::LazyDfa rev_scalar(re->matcher().reverse(), false);
+        rev_jit.set_jit_enabled(true);
+        rev_scalar.set_jit_enabled(false);
+
+        for (size_t pos = 0; pos <= len; pos += 3) {
+            for (bool earliest : {false, true}) {
+                auto r_jit = dfa_jit.forward(raw, len, pos, len, false, earliest);
+                auto r_sc = dfa_scalar.forward(raw, len, pos, len, false, earliest);
+                CHECK(r_jit.status == r_sc.status);
+                CHECK_EQ(r_jit.pos, r_sc.pos);
+
+                if (r_jit.status == rx::SearchStatus::Match && !earliest) {
+                    auto b_jit = rev_jit.reverse(raw, len, pos, r_jit.pos);
+                    auto b_sc = rev_scalar.reverse(raw, len, pos, r_sc.pos);
+                    CHECK(b_jit.status == b_sc.status);
+                    CHECK_EQ(b_jit.pos, b_sc.pos);
+                }
+            }
+        }
+    }
 }

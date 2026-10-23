@@ -1,9 +1,128 @@
 #include "host_search_internal.h"
 
 #include <filesystem>
+#include <list>
+#include <mutex>
 #include <system_error>
+#include <unordered_map>
 
 namespace brosearch::api {
+
+namespace {
+
+constexpr size_t kMaxCompiledCacheEntries = 128;
+
+std::string makeGrepCacheKey(std::string_view pattern, const bro::search::GrepOptions& o) {
+    std::string key;
+    key.reserve(pattern.size() + 32);
+    key.append(pattern);
+    key.push_back('\0');
+    key.push_back(o.fixed_strings ? '1' : '0');
+    key.push_back(static_cast<char>('0' + static_cast<int>(o.case_matching)));
+    key.push_back(o.word ? '1' : '0');
+    key.push_back(o.whole_line ? '1' : '0');
+    key.push_back(o.invert ? '1' : '0');
+    key.push_back(o.multiline ? '1' : '0');
+    key.push_back(static_cast<char>('0' + static_cast<int>(o.binary)));
+    key.append(reinterpret_cast<const char*>(&o.max_filesize), sizeof(o.max_filesize));
+    key.append(reinterpret_cast<const char*>(&o.before_context), sizeof(o.before_context));
+    key.append(reinterpret_cast<const char*>(&o.after_context), sizeof(o.after_context));
+    key.append(reinterpret_cast<const char*>(&o.max_count), sizeof(o.max_count));
+    key.append(reinterpret_cast<const char*>(&o.threads), sizeof(o.threads));
+    return key;
+}
+
+std::shared_ptr<const bro::search::Grep> compileCachedGrep(
+    std::string_view pattern,
+    const bro::search::GrepOptions& opts,
+    std::string* out_err) {
+    static std::mutex mu;
+    static std::list<std::pair<std::string, std::shared_ptr<const bro::search::Grep>>> lru;
+    static std::unordered_map<std::string, decltype(lru.begin())> map;
+
+    const std::string key = makeGrepCacheKey(pattern, opts);
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = map.find(key);
+        if (it != map.end()) {
+            lru.splice(lru.begin(), lru, it->second);
+            return it->second->second;
+        }
+    }
+
+    auto compiled = bro::search::Grep::compile(pattern, opts, out_err);
+    if (!compiled) return nullptr;
+
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = map.find(key);
+    if (it != map.end()) {
+        lru.splice(lru.begin(), lru, it->second);
+        return it->second->second;
+    }
+    if (map.size() >= kMaxCompiledCacheEntries) {
+        map.erase(lru.back().first);
+        lru.pop_back();
+    }
+    lru.emplace_front(key, compiled);
+    map.emplace(lru.front().first, lru.begin());
+    return compiled;
+}
+
+std::string makeRegexCacheKey(std::string_view pattern, const bro::search::RegexOptions& o) {
+    std::string key;
+    key.reserve(pattern.size() + 16);
+    key.append(pattern);
+    key.push_back('\0');
+    key.push_back(o.case_insensitive ? '1' : '0');
+    key.push_back(o.smart_case ? '1' : '0');
+    key.push_back(o.multi_line ? '1' : '0');
+    key.push_back(o.dot_matches_new_line ? '1' : '0');
+    key.push_back(o.swap_greed ? '1' : '0');
+    key.push_back(o.unicode ? '1' : '0');
+    key.push_back(o.literal ? '1' : '0');
+    key.push_back(o.word ? '1' : '0');
+    key.push_back(o.whole_line ? '1' : '0');
+    key.push_back(o.crlf ? '1' : '0');
+    return key;
+}
+
+std::shared_ptr<const bro::search::Regex> compileCachedRegex(
+    std::string_view pattern,
+    const bro::search::RegexOptions& opts,
+    std::string* out_err) {
+    static std::mutex mu;
+    static std::list<std::pair<std::string, std::shared_ptr<const bro::search::Regex>>> lru;
+    static std::unordered_map<std::string, decltype(lru.begin())> map;
+
+    const std::string key = makeRegexCacheKey(pattern, opts);
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = map.find(key);
+        if (it != map.end()) {
+            lru.splice(lru.begin(), lru, it->second);
+            return it->second->second;
+        }
+    }
+
+    auto compiled = bro::search::Regex::compile(pattern, opts, out_err);
+    if (!compiled) return nullptr;
+
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = map.find(key);
+    if (it != map.end()) {
+        lru.splice(lru.begin(), lru, it->second);
+        return it->second->second;
+    }
+    if (map.size() >= kMaxCompiledCacheEntries) {
+        map.erase(lru.back().first);
+        lru.pop_back();
+    }
+    lru.emplace_front(key, compiled);
+    map.emplace(lru.front().first, lru.begin());
+    return compiled;
+}
+
+} // namespace
 
 HostClass g_regexClass;
 HostClass g_cancellationTokenClass;
@@ -192,7 +311,7 @@ static Value js_grepSync(Value, std::span<const Value> args) {
     }
 
     std::string compile_err;
-    auto grep = bro::search::Grep::compile(pattern, grep_opts, &compile_err);
+    auto grep = compileCachedGrep(pattern, grep_opts, &compile_err);
     if (!grep) {
         return ev::throwError("Grep compile error: " + compile_err);
     }
@@ -275,7 +394,7 @@ static Value js_grep(Value, std::span<const Value> args) {
     job->callback.set(onMatchFn.get());
 
     std::string compile_err;
-    auto grep = bro::search::Grep::compile(pattern, grep_opts, &compile_err);
+    auto grep = compileCachedGrep(pattern, grep_opts, &compile_err);
     if (!grep) {
         ev::Persistent err(makeError("Grep compile error: " + compile_err));
         ev::rejectPromise(job->promise.get(), err.get());
@@ -309,7 +428,7 @@ static Value js_grepBuffer(Value, std::span<const Value> args) {
     bro::search::GrepOptions grep_opts = parseGrepOptions(optVal);
 
     std::string compile_err;
-    auto grep = bro::search::Grep::compile(pattern, grep_opts, &compile_err);
+    auto grep = compileCachedGrep(pattern, grep_opts, &compile_err);
     if (!grep) {
         return ev::throwError("Grep compile error: " + compile_err);
     }
@@ -373,7 +492,7 @@ static Value js_Regex_ctor(Value, std::span<const Value> args) {
     bro::search::RegexOptions opts = args.size() > 1 ? parseRegexOptions(args[1]) : bro::search::RegexOptions();
 
     std::string err;
-    auto rx = bro::search::Regex::compile(pattern, opts, &err);
+    auto rx = compileCachedRegex(pattern, opts, &err);
     if (!rx) {
         return ev::throwError("Regex compile error: " + err);
     }
@@ -467,7 +586,7 @@ static Value js_regex(Value, std::span<const Value> args) {
     bro::search::RegexOptions opts = args.size() > 1 ? parseRegexOptions(args[1]) : bro::search::RegexOptions();
 
     std::string err;
-    auto rx = bro::search::Regex::compile(pattern, opts, &err);
+    auto rx = compileCachedRegex(pattern, opts, &err);
     if (!rx) {
         return ev::throwError("Regex compile error: " + err);
     }

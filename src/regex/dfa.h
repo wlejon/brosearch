@@ -38,6 +38,9 @@ public:
     // a match spans [s, end). Requires a reverse program.
     SearchResult reverse(const uint8_t* data, size_t len, size_t start, size_t end);
 
+    void set_jit_enabled(bool on) noexcept { jit_enabled_ = on; }
+    bool jit_enabled() const noexcept { return jit_enabled_; }
+
 private:
     // Context class of a byte for look-around; kCtxNone = beginning/end of input.
     enum : uint8_t { kCtxNone = 0, kCtxLF, kCtxCR, kCtxWord, kCtxOther, kCtxCount };
@@ -52,6 +55,7 @@ private:
 
     const Program& prog_;
     bool leftmost_first_;
+    bool jit_enabled_ = true;
     size_t cache_bytes_;
     uint32_t stride_;      // byte classes + 1 (EOI column)
     bool use_ctx_;         // program has looks; otherwise ctx is always kCtxNone

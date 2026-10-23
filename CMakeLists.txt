@@ -44,6 +44,9 @@ endif()
 
 find_package(Threads REQUIRED)
 
+bro_dependency(brass GITHUB wlejon/brass TARGET brass
+               OPTIONS BRASS_BUILD_TESTS=OFF BRASS_BUILD_TOOLS=OFF)
+
 # Sources are grouped by module directory under src/ (fuzzy, ignore, walk, regex, grep, core).
 # Platform-specific translation units guard themselves with #ifdef, so the glob is portable.
 file(GLOB_RECURSE BROSEARCH_SOURCES CONFIGURE_DEPENDS
@@ -59,8 +62,9 @@ target_include_directories(brosearch
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${brass_SOURCE_DIR}/include
 )
-target_link_libraries(brosearch PUBLIC Threads::Threads)
+target_link_libraries(brosearch PUBLIC Threads::Threads PRIVATE brass)
 if(APPLE)
     # git's NFD -> NFC precomposition (src/ignore/precompose.cpp) goes through the system iconv,
     # the only one with Apple's "UTF-8-MAC" decomposition.

@@ -3,7 +3,13 @@
 #include "fuzzy/fuzzy_algo.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
+
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#define BROSEARCH_FUZZY_SSE2 1
+#include <emmintrin.h>
+#endif
 
 namespace bro::search::fuzzy_detail {
 
@@ -27,15 +33,26 @@ inline int32_t index_at(int32_t index, int32_t max, bool forward) noexcept {
 }
 
 int32_t try_skip(const Chars& in, bool case_sensitive, unsigned char b, int32_t from) noexcept {
+    if (from >= in.n) return -1;
     const unsigned char* p = in.bytes;
     if (!case_sensitive && b >= 'a' && b <= 'z') {
         unsigned char u = static_cast<unsigned char>(b - 32);
-        for (int32_t i = from; i < in.n; ++i) {
+        int32_t i = from;
+#ifdef BROSEARCH_FUZZY_SSE2
+        const __m128i vb = _mm_set1_epi8(static_cast<char>(b));
+        const __m128i vu = _mm_set1_epi8(static_cast<char>(u));
+        while (in.n - i >= 16) {
+            __m128i v = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + i));
+            int m = _mm_movemask_epi8(_mm_or_si128(_mm_cmpeq_epi8(v, vb), _mm_cmpeq_epi8(v, vu)));
+            if (m) return i + static_cast<int32_t>(std::countr_zero(static_cast<unsigned>(m)));
+            i += 16;
+        }
+#endif
+        for (; i < in.n; ++i) {
             if (p[i] == b || p[i] == u) return i;
         }
         return -1;
     }
-    if (from >= in.n) return -1;
     const void* hit = std::memchr(p + from, b, static_cast<size_t>(in.n - from));
     return hit ? static_cast<int32_t>(static_cast<const unsigned char*>(hit) - p) : -1;
 }
