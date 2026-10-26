@@ -1,10 +1,11 @@
-// bro.search under a path gate (api.h, "Path gate"): a walk or a grep asks the
-// gate for its root, a refusal is an Error carrying the gate's sentence, code
+// bro.search under the host's access gate (embed/embed_access.h; api.h,
+// "Access"): a walk or a grep asks the gate for its root, a refusal is an Error carrying the gate's sentence, code
 // EACCES and the path, and with the gate removed everything behaves as before.
 // Run from test_search_api.cpp's main against its realm and its temp tree.
 
 #include "../src/api/api.h"
 #include "embed/embed.h"
+#include "embed/embed_access.h"
 #include "eval/eval.h"
 
 #include <atomic>
@@ -87,9 +88,10 @@ void runPathGateTests(const fs::path& tmp) {
     const std::string docsPrefix = gatePath(docs);
 
     std::atomic<int> calls{0};
-    brosearch::api::setPathGate([&](const std::string& path, brosearch::api::PathAccess access) -> std::string {
+    ev::setAccessGate([&](const ev::AccessRequest& r) -> std::string {
         ++calls;
-        if (access != brosearch::api::PathAccess::Read) return "unexpected write: " + path;
+        const std::string path(r.subject);
+        if (r.kind != ev::AccessKind::Read) return "unexpected access: " + path;
         if (path.compare(0, docsPrefix.size(), docsPrefix) == 0) return "no files access: " + path;
         return "";
     });
@@ -123,7 +125,7 @@ void runPathGateTests(const fs::path& tmp) {
     GCHECK(r == "ok:false", r);
 
     // With the gate removed, nothing asks and everything works as before.
-    brosearch::api::setPathGate(nullptr);
+    ev::setAccessGate(nullptr);
     const int before = calls.load();
     r = syncJs("bro.search.filesSync(" + q(docs) + ").length");
     GCHECK(r == "ok:2", r);
