@@ -35,6 +35,12 @@ void shutdownSearchAsync();
 // gate's sentence (named PermissionRevoked for a grant taken back), `code` is
 // "EACCES" and `path` the absolute path asked about: thrown by a synchronous
 // native, the promise rejected with it by an asynchronous one.
+//
+// files() and grep() keep reading after the call returns, so each is held in the
+// gate's ledger (holdAccess) on the calling thread until its promise settles.
+// When the host changes its grants and the gate refuses the root again, the job
+// is cancelled (through its cancellation token), streams no more onFile/onMatch
+// calls, and its promise rejects with the refusal at the next tickSearchAsync.
 
 } // namespace brosearch::api
 

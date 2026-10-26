@@ -49,6 +49,7 @@ static void pumpAsync(int maxTicks = 100) {
 }
 
 void runPathGateTests(const std::filesystem::path& tmp);
+void runRevokeTests(const std::filesystem::path& tmp);
 
 int main() {
     std::cout << "Starting brosearch JavaScript API tests..." << std::endl;
@@ -533,6 +534,7 @@ int main() {
 
     // The path gate (test_search_api_gate.cpp)
     runPathGateTests(tmp_dir);
+    runRevokeTests(tmp_dir);
 
     // Cleanup temp directory
     std::error_code ec;

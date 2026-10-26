@@ -33,10 +33,19 @@ Value makeError(const std::string& msg) {
 
 void trackAsyncJob(std::shared_ptr<AsyncJob> job) {
     job->id = ++t_next_job_id;
+    std::weak_ptr<AsyncJob> weak = job;
+    job->held = holdPath(job->root, [weak](const std::string& refusal) {
+        auto j = weak.lock();
+        if (!j || j->done.load(std::memory_order_acquire)) return;
+        j->held = 0;  // the ledger let it go before calling
+        j->revoked = refusal;
+        if (j->cancel_token) j->cancel_token->cancel();
+    });
     t_jobs.push_back(std::move(job));
 }
 
 static bool drainJobStream(AsyncJob& job) {
+    if (!job.revoked.empty()) return false;  // what it read after the grant went is not reported
     if (!ev::isFunction(job.callback.get())) return false;
 
     bool did_work = false;
@@ -112,8 +121,12 @@ bool drainAsyncJobs() {
 
         // Drain any remaining streaming items produced after Step 1 before resolving.
         drainJobStream(*job);
+        releaseHeldPath(job->held);
 
-        if (!job->error.empty()) {
+        if (!job->revoked.empty()) {
+            ev::Persistent err(newRevokedError(job->revoked, job->root));
+            ev::rejectPromise(job->promise.get(), err.get());
+        } else if (!job->error.empty()) {
             ev::Persistent err(makeError(job->error));
             ev::rejectPromise(job->promise.get(), err.get());
         } else if (!job->is_grep) {
@@ -146,6 +159,7 @@ void cancelAllAsyncJobs() {
     std::vector<std::shared_ptr<AsyncJob>> jobs;
     jobs.swap(t_jobs);
     for (auto& job : jobs) {
+        releaseHeldPath(job->held);
         if (job->cancel_token) {
             job->cancel_token->cancel();
         }

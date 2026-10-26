@@ -395,6 +395,7 @@ static Value js_grep(Value, std::span<const Value> args) {
 
     auto job = std::make_shared<AsyncJob>();
     job->is_grep = true;
+    job->root = std::filesystem::path(rootStr);
     job->cancel_token = cancel_tok;
     job->promise.set(ev::createPromise());
     job->callback.set(onMatchFn.get());

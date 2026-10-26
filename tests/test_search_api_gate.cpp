@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -134,4 +135,76 @@ void runPathGateTests(const fs::path& tmp) {
     GCHECK(calls.load() == before, "a removed gate was still asked");
 
     std::cout << "  path gate [PASS]" << std::endl;
+}
+
+// A walk or grep started with files() or grep() keeps reading after the call
+// returns, so it is held in the gate's ledger while it runs; when the host
+// takes the grant back it is cancelled, streams nothing more, and its promise
+// rejects with an Error named PermissionRevoked. One whose grant is kept
+// finishes.
+void runRevokeTests(const fs::path& tmp) {
+    std::cout << "Testing revocation of running walks..." << std::endl;
+
+    const fs::path big = tmp / "revoke_big";
+    const fs::path kept = tmp / "src";
+    for (int d = 0; d < 40; ++d) {
+        fs::create_directories(big / ("d" + std::to_string(d)));
+        for (int f = 0; f < 100; ++f) {
+            std::ofstream(big / ("d" + std::to_string(d)) / ("f" + std::to_string(f) + ".txt")) << "needle\n";
+        }
+    }
+    const std::string bigPrefix = gatePath(big);
+    std::atomic<bool> revoke{false};
+    ev::setAccessGate([&](const ev::AccessRequest& r) -> std::string {
+        const std::string path(r.subject);
+        if (revoke.load() && path.compare(0, bigPrefix.size(), bigPrefix) == 0) {
+            return std::string(ev::kPermissionRevokedPrefix) + "no files access: " + path;
+        }
+        return "";
+    });
+
+    const size_t heldBefore = ev::heldAccessCount();
+    auto res = bronze::eval::evalScript(
+        "globalThis._rv = { files: null, grep: null, kept: null, streamedAfter: 0, revoked: false };\n"
+        "const out = (k) => [v => { _rv[k] = 'resolved:' + v.length; }, e => { _rv[k] = e; }];\n"
+        "bro.search.files(" + q(big) + ", { onFile: () => { if (_rv.revoked) _rv.streamedAfter++; } })"
+        ".then(...out('files'));\n"
+        "bro.search.grep(" + q(big) + ", 'needle', { onMatch: () => { if (_rv.revoked) _rv.streamedAfter++; } })"
+        ".then(...out('grep'));\n"
+        "bro.search.files(" + q(kept) + ").then(...out('kept'));\n");
+    GCHECK(!res.thrown, "starting the walks threw");
+    GCHECK(ev::heldAccessCount() == heldBefore + 3,
+           "three running jobs held: " + std::to_string(ev::heldAccessCount() - heldBefore));
+
+    revoke.store(true);
+    ev::accessChanged();
+    const int revoked = ev::revalidateHeldAccess();
+    bronze::eval::evalScript("_rv.revoked = true;");
+    GCHECK(revoked == 2, "the two walks of the revoked folder: " + std::to_string(revoked));
+
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(20)) {
+        brosearch::api::tickSearchAsync();
+        ev::drainMicrotasks();
+        if (evalString("_rv.files && _rv.grep && _rv.kept ? 'y' : 'n'") == "y") break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    auto described = [](const std::string& k) {
+        return evalString("(function(e) { return e && typeof e === 'object' ? e.name + '|' + e.message + '|' + "
+                          "e.code + '|' + e.path : String(e); })(_rv." + k + ")");
+    };
+    const std::string expect = "PermissionRevoked|no files access: " + bigPrefix + "|EACCES|" + bigPrefix;
+    std::string got = described("files");
+    GCHECK(got == expect, got);
+    got = described("grep");
+    GCHECK(got == expect, got);
+    got = described("kept");
+    GCHECK(got == "resolved:2", got);
+    GCHECK(evalString("String(_rv.streamedAfter)") == "0", "a revoked walk streamed after the revocation");
+    GCHECK(ev::heldAccessCount() == heldBefore, "settled jobs released: " + std::to_string(ev::heldAccessCount()));
+
+    ev::setAccessGate(nullptr);
+    std::error_code ec;
+    fs::remove_all(big, ec);
+    std::cout << "  revocation [PASS]" << std::endl;
 }

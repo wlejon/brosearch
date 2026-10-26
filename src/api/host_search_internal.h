@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -46,6 +47,14 @@ Value newAccessError(const PathRefusal& refusal);
 Value throwAccessError(const PathRefusal& refusal);
 /// A promise already rejected with newAccessError.
 Value rejectedAccessPromise(const PathRefusal& refusal);
+/// Holds a walk or grep that keeps reading `p` after the call returned in the
+/// gate's ledger on the calling thread: when the host takes the grant back,
+/// `revoke` runs there with the refusal. 0 when no gate is installed.
+uint64_t holdPath(const std::filesystem::path& p, std::function<void(const std::string& refusal)> revoke);
+void releaseHeldPath(uint64_t& id);
+/// A revoke's refusal as the Error the job rejects with (PermissionRevoked for
+/// a grant taken back), code EACCES, `path` the absolute path. Fresh: root it.
+Value newRevokedError(const std::string& refusal, const std::filesystem::path& p);
 
 extern HostClass g_fuzzyIndexClass;
 extern HostClass g_regexClass;
@@ -66,6 +75,15 @@ struct AsyncJob {
     ev::Persistent callback; // onFile or onMatch
     std::atomic<bool> done{false};
     std::string error;
+
+    // What the job reads (the walk's or grep's root), held in the access
+    // gate's ledger while it runs (trackAsyncJob). `revoked` is the refusal
+    // when the host took the grant back: the job is cancelled, streams nothing
+    // more, and its promise rejects with it. Both are touched only on the JS
+    // thread that started the job.
+    std::filesystem::path root;
+    uint64_t held = 0;
+    std::string revoked;
 
     // files job
     bool is_grep = false;

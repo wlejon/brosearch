@@ -204,6 +204,7 @@ static Value js_files(Value, std::span<const Value> args) {
 
     auto job = std::make_shared<AsyncJob>();
     job->is_grep = false;
+    job->root = root;
     job->cancel_token = cancel_tok;
     job->promise.set(ev::createPromise());
     job->callback.set(onFileFn.get());
