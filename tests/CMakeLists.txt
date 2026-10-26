@@ -36,6 +36,7 @@ endforeach()
 if(BROSEARCH_ENABLE_API)
     add_executable(brosearch_test_api
         test_search_api.cpp
+        test_search_api_gate.cpp
     )
     target_include_directories(brosearch_test_api PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

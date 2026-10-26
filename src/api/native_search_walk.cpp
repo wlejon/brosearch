@@ -111,6 +111,7 @@ static void executeWalk(const std::filesystem::path& root,
 static Value js_filesSync(Value, std::span<const Value> args) {
     std::string rootStr = (!args.empty() && ev::isString(args[0])) ? ev::toUtf8(args[0]) : ".";
     std::filesystem::path root(rootStr);
+    if (auto refused = checkPath(root, PathAccess::Read)) return throwAccessError(refused);
 
     Value optVal = args.size() > 1 ? args[1] : ev::undefined();
     ev::Persistent optP(optVal);
@@ -165,6 +166,7 @@ static Value js_filesSync(Value, std::span<const Value> args) {
 static Value js_files(Value, std::span<const Value> args) {
     std::string rootStr = (!args.empty() && ev::isString(args[0])) ? ev::toUtf8(args[0]) : ".";
     std::filesystem::path root(rootStr);
+    if (auto refused = checkPath(root, PathAccess::Read)) return rejectedAccessPromise(refused);
 
     Value optVal = args.size() > 1 ? args[1] : ev::undefined();
     ev::Persistent optP(optVal);
@@ -257,6 +259,12 @@ static Value js_Gitignore_ctor(Value, std::span<const Value> args) {
         }
     }
 
+    if (!rootStr.empty()) {
+        if (auto refused = checkPath(std::filesystem::path(rootStr), PathAccess::Read)) {
+            return throwAccessError(refused);
+        }
+    }
+
     std::unique_ptr<bro::search::IgnoreFilter> filter;
     if (rootStr.empty()) {
         filter = std::make_unique<bro::search::IgnoreFilter>(mode);
@@ -303,6 +311,9 @@ static void decorateGitignore(ObjectBuilder& b) {
         if (!f) return ev::throwTypeError("GitignoreMatcher: invalid receiver");
         if (args.empty() || !ev::isString(args[0])) return ev::fromBool(false);
         std::string path = ev::toUtf8(args[0]);
+        if (auto refused = checkPath(std::filesystem::path(path), PathAccess::Read)) {
+            return throwAccessError(refused);
+        }
         bool ok = false;
         if (args.size() > 1 && ev::isString(args[1])) {
             ok = f->load_file(std::filesystem::path(path), ev::toUtf8(args[1]));

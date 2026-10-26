@@ -1,5 +1,6 @@
 add_library(brosearch_api STATIC
     api.cpp
+    access_gate.cpp
     host_class.cpp
     native_search_fuzzy.cpp
     native_search_walk.cpp

@@ -280,6 +280,9 @@ static Value js_grepSync(Value, std::span<const Value> args) {
     if (args.size() < 2) return ev::makeArray(0);
     std::string rootStr = ev::isString(args[0]) ? ev::toUtf8(args[0]) : ".";
     std::string pattern = ev::isString(args[1]) ? ev::toUtf8(args[1]) : "";
+    if (auto refused = checkPath(std::filesystem::path(rootStr), PathAccess::Read)) {
+        return throwAccessError(refused);
+    }
 
     Value optVal = args.size() > 2 ? args[2] : ev::undefined();
     ev::Persistent optP(optVal);
@@ -355,6 +358,9 @@ static Value js_grep(Value, std::span<const Value> args) {
 
     std::string rootStr = ev::isString(args[0]) ? ev::toUtf8(args[0]) : ".";
     std::string pattern = ev::isString(args[1]) ? ev::toUtf8(args[1]) : "";
+    if (auto refused = checkPath(std::filesystem::path(rootStr), PathAccess::Read)) {
+        return rejectedAccessPromise(refused);
+    }
 
     Value optVal = args.size() > 2 ? args[2] : ev::undefined();
     ev::Persistent optP(optVal);
