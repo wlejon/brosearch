@@ -12,8 +12,8 @@ namespace {
 
 // Matches are searched in line-aligned chunks of about this size so cancellation is prompt even
 // in one huge file.
-// The slowest path (the PikeVM) covers 128 KiB in tens of milliseconds even unoptimized.
-constexpr size_t kChunk = size_t(128) << 10;
+// The slowest path (the PikeVM) covers 32 KiB in tens of milliseconds even under atomic gcov.
+constexpr size_t kChunk = size_t(32) << 10;
 
 class Driver {
 public:
