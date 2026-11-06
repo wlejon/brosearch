@@ -10,6 +10,7 @@ target_include_directories(brosearch_api PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../include>
+    $<BUILD_INTERFACE:${brass_SOURCE_DIR}/include>
 )
 
 target_link_libraries(brosearch_api PUBLIC

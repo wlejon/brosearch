@@ -14,15 +14,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Coverage. Scoped to a top-level build: a consumer that add_subdirectory()s
 # brosearch has no business having its own build instrumented from in here.
 option(BROSEARCH_COVERAGE "Instrument the build for gcov coverage (GCC/Clang)" OFF)
-if(BROSEARCH_COVERAGE AND PROJECT_IS_TOP_LEVEL)
-    if(MSVC)
-        message(FATAL_ERROR "BROSEARCH_COVERAGE requires GCC or Clang (gcov instrumentation)")
-    endif()
-    # Atomic counters: the parallel walk and batch fuzzy filter run the same
-    # lines on many threads, and racing plain counters give gcov negative hits.
-    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
-    add_link_options(--coverage)
-endif()
+option(BROSEARCH_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 
 if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -46,6 +38,25 @@ find_package(Threads REQUIRED)
 
 bro_dependency(brass GITHUB wlejon/brass TARGET brass
                OPTIONS BRASS_BUILD_TESTS=OFF BRASS_BUILD_TOOLS=OFF)
+
+if(BROSEARCH_ENABLE_API)
+    # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
+    # outer project's target, else ../bronze beside the top-level project, else
+    # the head of its main, fetched at configure.
+    bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
+                   OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
+endif()
+
+if(BROSEARCH_COVERAGE AND PROJECT_IS_TOP_LEVEL)
+    if(MSVC)
+        message(FATAL_ERROR "BROSEARCH_COVERAGE requires GCC or Clang (gcov instrumentation)")
+    endif()
+    # Atomic counters: the parallel walk and batch fuzzy filter run the same
+    # lines on many threads, and racing plain counters give gcov negative hits.
+    # Placed after bro_dependency() so brass and bronze are not instrumented.
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g -UNDEBUG)
+    add_link_options(--coverage)
+endif()
 
 # Sources are grouped by module directory under src/ (fuzzy, ignore, walk, regex, grep, core).
 # Platform-specific translation units guard themselves with #ifdef, so the glob is portable.
@@ -82,14 +93,7 @@ endif()
 # On by default only when brosearch is the top-level project. A library that
 # consumes brosearch (bropty, bromux, ...) then never needs bronze checked out;
 # bro, the one consumer that wants the api, forces BROSEARCH_ENABLE_API ON.
-option(BROSEARCH_ENABLE_API "Build Bronze JavaScript API" ${PROJECT_IS_TOP_LEVEL})
 if(BROSEARCH_ENABLE_API)
-    # bronze (with brass, its code generator) through cmake/bro_deps.cmake: an
-    # outer project's target, else ../bronze beside the top-level project, else
-    # the head of its main, fetched at configure.
-    bro_dependency(bronze GITHUB wlejon/bronze TARGET bronze_runtime_shared
-                   OPTIONS BRONZE_BUILD_SHARED_RUNTIME=ON BRONZE_BUILD_TESTS=OFF)
-
     add_subdirectory(src/api)
 endif()
 
