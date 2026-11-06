@@ -36,7 +36,7 @@ void trackAsyncJob(std::shared_ptr<AsyncJob> job) {
     std::weak_ptr<AsyncJob> weak = job;
     job->held = holdPath(job->root, [weak](const std::string& refusal) {
         auto j = weak.lock();
-        if (!j || j->done.load(std::memory_order_acquire)) return;
+        if (!j) return;
         j->held = 0;  // the ledger let it go before calling
         j->revoked = refusal;
         if (j->cancel_token) j->cancel_token->cancel();
