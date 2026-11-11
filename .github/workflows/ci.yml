@@ -64,9 +64,24 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Seed sccache tool cache (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARCH="x64"; ASSET="sccache-v0.19.0-x86_64-pc-windows-msvc.tar.gz"
+          DEST="$RUNNER_TOOL_CACHE/sccache/0.19.0/$ARCH"
+          mkdir -p "$DEST"
+          if (cd "$DEST" && gh release download v0.19.0 -R mozilla/sccache -p "$ASSET" -O "$ASSET" && tar -xzf "$ASSET" --strip-components=1 && rm -f "$ASSET"); then
+            touch "${DEST}.complete"
+          fi
+
       - name: Compiler cache (Windows)
         if: runner.os == 'Windows'
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: "v0.19.0"
 
       - name: Configure
         env:
